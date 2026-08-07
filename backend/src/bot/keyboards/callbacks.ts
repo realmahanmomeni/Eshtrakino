@@ -1,0 +1,112 @@
+/**
+ * Callback data conventions (keep short for Telegram 64-byte limit).
+ */
+
+export const Callbacks = {
+  mainMenu: "menu:main",
+  shop: "menu:shop",
+  account: "menu:account",
+  wallet: "menu:wallet",
+  walletTopUp: "wallet:topup",
+  walletSwapDeposit: "swap_deposit",
+  walletSwapAmount: (usd: number) => `swap_amt:${usd}`,
+  walletSwapAmountCustom: "swap_amt:custom",
+  walletSwapVerify: (invoiceId: number) => `verify_swappay:${invoiceId}`,
+  walletSwapCancel: (invoiceId: number) => `cancel_swappay:${invoiceId}`,
+  walletSwapOpen: (invoiceId: number) => `open_swappay:${invoiceId}`,
+  support: "menu:support",
+  /** Opens ticket conversation from the CMS support page */
+  supportOpenTicket: "menu:support:open",
+  cancelInvoice: "cancel_invoice",
+  category: (categoryId: number) => `cat:${categoryId}`,
+  viewProduct: (productId: number) => `prod:${productId}`,
+  buy: (productId: number) => `buy:${productId}`,
+  pay: (invoiceId: number) => `pay:${invoiceId}`,
+  payCard: (invoiceId: number) => `pay:card:${invoiceId}`,
+  payWallet: (invoiceId: number) => `pay:wallet:${invoiceId}`,
+  paySwap: (invoiceId: number) => `pay:swap:${invoiceId}`,
+  /** Checkout: custom/dynamic PaymentMethod from DB */
+  payCustom: (invoiceId: number, methodId: number) => `pay:custom:${invoiceId}:${methodId}`,
+  payMethod: (invoiceId: number, methodId: number) => `pm:${invoiceId}:${methodId}`,
+  /** Wallet top-up via a specific PaymentMethod */
+  walletCustom: (methodId: number) => `wallet:custom:${methodId}`,
+  cancelInv: (invoiceId: number) => `cancel_inv:${invoiceId}`,
+  provideCredentials: (invoiceId: number) => `user:provide_creds:${invoiceId}`,
+  chooseDeliveryMode: (productId: number) => `buy:choose:${productId}`,
+  chooseDeliveryReady: (productId: number) => `buy:choice:${productId}:READY`,
+  chooseDeliveryCredentials: (productId: number) =>
+    `buy:choice:${productId}:CREDENTIALS_REQUIRED`,
+
+  // Admin
+  adminHome: "adm:home",
+  adminCatalog: "adm:cat",
+  adminPayments: "adm:pay",
+  adminStats: (timeframe: string = "all") => `adm:stats:${timeframe}`,
+  adminAddCategory: "adm:cat:add",
+  adminDelCategoryMenu: "adm:cat:delm",
+  adminDelCategory: (id: number) => `adm:cat:del:${id}`,
+  adminAddProduct: "adm:prd:add",
+  adminEditProductMenu: "adm:prd:editm",
+  adminEditProduct: (id: number) => `adm:prd:edit:${id}`,
+  adminEditPriceMenu: "adm:prd:pricem",
+  adminEditPrice: (id: number) => `adm:prd:price:${id}`,
+  adminDelProductMenu: "adm:prd:delm",
+  adminDelProduct: (id: number) => `adm:prd:del:${id}`,
+  adminProductAlert: (id: number) => `adm:prd:alert:${id}`,
+  adminProductDuration: (id: number) => `adm:prd:duration:${id}`,
+  adminProductCredentialReq: (id: number) => `adm:prd:cred_req:${id}`,
+  adminRestockProduct: (id: number) => `adm:prd:restock:${id}`,
+  adminInventoryReport: "adm:prd:inventory",
+  adminBackupMenu: "adm:backup_menu",
+  adminManualBackup: "adm:backup",
+  adminSetAutoBackup: "adm:backup:auto",
+  adminAddPayment: "adm:pm:add",
+  adminListPayments: "adm:pm:list",
+  adminTogglePayment: (id: number) => `adm:pm:tog:${id}`,
+  adminConfigPayment: (id: number) => `adm:pm:cfg:${id}`,
+  adminApproveInvoice: (id: number) => `adm:approve_inv:${id}`,
+  adminRejectInvoice: (id: number) => `adm:reject_inv:${id}`,
+  adminReceipts: "adm:receipts",
+  adminReceiptsList: (status: string) => `adm:receipts:list:${status}`,
+  adminSetLogGroup: "adm:set_log_group",
+  adminSetSwapApiKey: "adm:set_swap_api_key",
+  adminSetSwapWalletAddress: "adm:set_swap_wallet",
+  adminToggleSwapPay: "adm:swap:tog",
+
+  // User management — interactive list
+  /** Opens list at last session page, or all:0 */
+  adminUsers: "adm:users",
+  adminUsersList: (filter: string, page: number) => `adm:users:list:${filter}:${page}`,
+  adminUsersSearchInit: "adm:users:search:init",
+  /** Profile — `id` is internal User.id */
+  adminUserProfile: (id: number) => `adm:users:v:${id}`,
+  adminUserMessage: (id: number) => `adm:users:msg:${id}`,
+  adminUserBalance: (id: number) => `adm:users:bal:${id}`,
+
+  // Contextual CMS (page settings)
+  cmsEditText: (pageKey: string) => `adm:cms:edit:${pageKey}`,
+  cmsSetMedia: (pageKey: string) => `adm:cms:media:${pageKey}`,
+  cmsDelMedia: (pageKey: string) => `adm:cms:delmedia:${pageKey}`,
+  cmsToggleLayout: (pageKey: string) => `adm:cms:layout:${pageKey}`,
+  /** Shop category/product CMS */
+  cmsCats: "adm:cms:cats",
+  cmsCatAdd: "adm:cms:cat:add",
+  cmsCatView: (id: number) => `adm:cms:cat:v:${id}`,
+  cmsCatRename: (id: number) => `adm:cms:cat:rn:${id}`,
+  cmsCatDelete: (id: number) => `adm:cms:cat:del:${id}`,
+  cmsProds: "adm:cms:prods",
+  cmsProdList: (catId: number) => `adm:cms:prod:list:${catId}`,
+  cmsProdAdd: (catId: number) => `adm:cms:prod:add:${catId}`,
+  cmsProdView: (id: number) => `adm:cms:prod:v:${id}`,
+  cmsProdRename: (id: number) => `adm:cms:prod:rn:${id}`,
+  cmsProdPrice: (id: number) => `adm:cms:prod:pr:${id}`,
+  cmsProdDelete: (id: number) => `adm:cms:prod:del:${id}`,
+
+  // Tickets
+  adminTickets: "adm:tkt",
+  adminTicketsOpen: "adm:tkt:open",
+  adminTicketsClosed: "adm:tkt:closed",
+  adminTicketView: (id: number) => `adm:tkt:v:${id}`,
+  adminReplyTicket: (id: number) => `adm:tkt:re:${id}`,
+  adminCloseTicket: (id: number) => `adm:tkt:cl:${id}`,
+} as const;

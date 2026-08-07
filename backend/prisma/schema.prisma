@@ -1,0 +1,263 @@
+// Eshtrakino Prisma schema — CRM + store
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DeliveryType {
+  READY
+  MANUAL
+  CREDENTIALS_REQUIRED
+  USER_CHOICE
+}
+
+enum InvoiceStatus {
+  PENDING
+  AWAITING_RECEIPT
+  AWAITING_APPROVAL
+  PAID
+  CANCELLED
+  EXPIRED
+}
+
+enum PaymentMethodType {
+  CARD
+  GATEWAY
+}
+
+enum CredentialRequirement {
+  BOTH
+  EMAIL_ONLY
+}
+
+enum TicketStatus {
+  OPEN
+  CLOSED
+}
+
+enum TicketSender {
+  USER
+  ADMIN
+}
+
+enum SwapInvoiceStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  EXPIRED
+  CANCELED
+}
+
+model User {
+  id         Int       @id @default(autoincrement())
+  telegramId BigInt    @unique
+  balance    Decimal   @default(0) @db.Decimal(14, 2)
+  joinedAt   DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  invoices            Invoice[]
+  tickets             Ticket[]
+  walletTransactions  WalletTransaction[]
+  swapWalletInvoices  SwapWalletInvoice[]
+
+  @@index([telegramId])
+}
+
+model WalletTransaction {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  amount      Decimal  @db.Decimal(14, 2)
+  /// TOPUP | PURCHASE
+  type        String
+  description String?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model Category {
+  id        Int       @id @default(autoincrement())
+  name      String
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  products  Product[]
+
+  @@index([isActive])
+}
+
+model Product {
+  id             Int          @id @default(autoincrement())
+  name           String
+  price          Decimal      @db.Decimal(14, 2)
+  categoryId     Int
+  deliveryType   DeliveryType
+  credentialReq  CredentialRequirement @default(BOTH)
+  lowStockThreshold Int       @default(1)
+  /// Subscription length in days for renewal reminders (e.g. 30)
+  durationDays   Int?
+  /// Multiline product details / features shown on the detail screen
+  description    String?
+  /// Telegram file_id for custom product banner image
+  bannerFileId   String?
+  /// JSON string array, e.g. ["Email","Password"]
+  requiredFields Json         @default("[]")
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  category       Category     @relation(fields: [categoryId], references: [id])
+  invoices       Invoice[]
+  inventory      ProductItem[]
+
+  @@index([categoryId])
+  @@index([isActive])
+}
+
+model ProductItem {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  /// Multiline account / license payload delivered to buyer
+  content   String
+  isSold    Boolean  @default(false)
+  invoiceId Int?     @unique
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id])
+
+  @@index([productId, isSold])
+  @@index([isSold, productId])
+}
+
+model Invoice {
+  id            Int           @id @default(autoincrement())
+  userId        Int
+  productId     Int?
+  status        InvoiceStatus @default(PENDING)
+  amount        Decimal       @db.Decimal(14, 2)
+  expiresAt     DateTime
+  isWalletTopUp Boolean       @default(false)
+  topUpAmount   Decimal?      @db.Decimal(14, 2)
+  /// Buyer's selected delivery mode when product.deliveryType is USER_CHOICE
+  deliveryPreference String?
+  /// Telegram file_id of the uploaded receipt photo
+  receiptFileId String?
+  rejectReason  String?
+  /// Buyer answers to product.requiredFields, e.g. {"Email":"a@b.com"}
+  userInputData Json?
+  reminded5Days   Boolean       @default(false)
+  remindedLastDay Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  user          User          @relation(fields: [userId], references: [id])
+  product       Product?      @relation(fields: [productId], references: [id])
+  productItem   ProductItem?
+
+  @@index([userId, status])
+  @@index([status])
+  @@index([status, expiresAt])
+  @@index([status, expiresAt, reminded5Days])
+  @@index([status, expiresAt, remindedLastDay])
+  @@index([expiresAt, reminded5Days, remindedLastDay])
+  @@index([productId])
+}
+
+model PaymentMethod {
+  id        Int               @id @default(autoincrement())
+  name      String
+  type      PaymentMethodType
+  /// JSON: CARD → { "cardNumber": "...", "cardName": "..." } | GATEWAY → { "token": "..." }
+  config    String
+  isActive  Boolean           @default(true)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@index([isActive])
+  @@index([type])
+}
+
+model Ticket {
+  id        Int             @id @default(autoincrement())
+  userId    Int
+  status    TicketStatus    @default(OPEN)
+  subject   String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  user      User            @relation(fields: [userId], references: [id])
+  messages  TicketMessage[]
+
+  @@index([userId, status])
+  @@index([status])
+}
+
+model TicketMessage {
+  id              Int          @id @default(autoincrement())
+  ticketId        Int
+  sender          TicketSender
+  /// Set when sender is ADMIN
+  adminTelegramId BigInt?
+  text            String
+  /// Telegram message id inside the support topic in the admin log group
+  tgMessageId     Int?         @unique
+  createdAt       DateTime     @default(now())
+  ticket          Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+}
+
+/// Global key-value settings (e.g. LOG_GROUP_ID, SWAPPAY_API_KEY)
+model SystemSetting {
+  key   String @id
+  value String
+}
+
+/// CMS: editable page copy for Telegram-native content management
+model PageContent {
+  id             Int      @id @default(autoincrement())
+  /// Stable key: home | shop | account | support | wallet
+  pageKey        String   @unique @db.VarChar(64)
+  /// Markdown body shown on that page (admin-editable)
+  textContent    String   @db.Text
+  /// Telegram file_id for page banner (photo or video)
+  mediaFileId    String?
+  /// "photo" | "video"
+  mediaType      String?  @db.VarChar(16)
+  /// User-facing list button columns: 1 or 2
+  layoutColumns  Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+/// Swap Wallet crypto top-up invoices (unique fractional USDT slots for matching)
+model SwapWalletInvoice {
+  id                Int               @id @default(autoincrement())
+  userId            Int
+  /// Base USD amount requested by the user (before unique fraction)
+  amountUsd         Decimal           @db.Decimal(18, 8)
+  /// Exact USDT the user must send (base + fraction, 2dp) — matching key
+  exactCryptoAmount Decimal?          @db.Decimal(18, 8)
+  gateway           String            @default("SWAPWALLET") @db.VarChar(32)
+  status            SwapInvoiceStatus @default(PENDING)
+  /// Display tracking code (e.g. SP-42)
+  trackingCode      String            @unique @db.VarChar(64)
+  /// SwapWallet transaction id after approval (anti double-credit)
+  providerRef       String?           @db.VarChar(128)
+  paymentUrl        String?           @db.VarChar(1024)
+  note              String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([exactCryptoAmount])
+  @@index([providerRef])
+  @@index([status, exactCryptoAmount])
+  @@index([status, createdAt])
+  /// Partial unique on exactCryptoAmount WHERE status='PENDING' is in migration SQL
+}

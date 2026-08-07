@@ -1,0 +1,37 @@
+{
+  "name": "eshtrakino-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Eshtrakino Telegram bot — digital subscription sales MVP",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "db:seed": "node prisma/seed.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@grammyjs/conversations": "^2.1.1",
+    "@prisma/client": "^6.9.0",
+    "dotenv": "^16.5.0",
+    "grammy": "^1.36.1",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "prisma": "^6.9.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
+  }
+}

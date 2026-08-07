@@ -1,0 +1,47 @@
+# Eshtrakino — Docker Compose
+# Ports chosen after `ss -tuln` on this host (avoid 22/53/80/443/3306/33060).
+# PostgreSQL published on host 5433 (container 5432).
+# Bot health HTTP published on host 3100.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eshtrakino-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eshtrakino}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eshtrakino_dev_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-eshtrakino}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - eshtrakino_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eshtrakino} -d ${POSTGRES_DB:-eshtrakino}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  bot:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: eshtrakino-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Internal Docker DNS — never use 127.0.0.1 from inside the bot container
+      DATABASE_URL: postgresql://${POSTGRES_USER:-eshtrakino}:${POSTGRES_PASSWORD_URLENC}@postgres:5432/${POSTGRES_DB:-eshtrakino}?schema=public&connection_limit=5
+      BOT_HEALTH_PORT: ${BOT_HEALTH_PORT:-3100}
+      ADMIN_IDS: ${ADMIN_IDS:-}
+      # Cap V8 heap so GC runs earlier instead of consuming all host RAM
+      NODE_OPTIONS: "--max-old-space-size=512"
+    ports:
+      - "${BOT_HEALTH_PORT:-3100}:3100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  eshtrakino_pgdata:
