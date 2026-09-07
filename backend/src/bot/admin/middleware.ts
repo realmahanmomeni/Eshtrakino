@@ -1,6 +1,6 @@
 import type { NextFunction } from "grammy";
 import type { BotContext } from "../context";
-import { isAdminTelegramId } from "../../config/env";
+import { hasAnyAdminAccess } from "./rbac";
 
 export async function adminOnlyMiddleware(
   ctx: BotContext,
@@ -10,7 +10,7 @@ export async function adminOnlyMiddleware(
     return next();
   }
 
-  if (!isAdminTelegramId(ctx.from?.id)) {
+  if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery({
         text: "⛔️ دسترسی ادمین ندارید.",
@@ -24,6 +24,3 @@ export async function adminOnlyMiddleware(
   await next();
 }
 
-export function assertAdmin(ctx: BotContext): boolean {
-  return isAdminTelegramId(ctx.from?.id);
-}

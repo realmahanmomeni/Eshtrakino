@@ -14,33 +14,7 @@ export function injectAdminControls(
   keyboard: InlineKeyboard,
   pageKey: PageKey,
 ): InlineKeyboard {
-  if (!isAdminTelegramId(ctx.from?.id)) {
-    return keyboard;
-  }
-
-  // Visual break before privileged actions
-  keyboard.row();
-
-  switch (pageKey) {
-    case "shop":
-      keyboard
-        .text("📝 ویرایش متن", Callbacks.cmsEditText("shop"))
-        .text("📁 مدیریت دسته‌ها", Callbacks.cmsCats)
-        .row()
-        .text("🛍 مدیریت محصولات", Callbacks.cmsProds)
-        .row();
-      break;
-    default:
-      keyboard.text("📝 ویرایش متن صفحه", Callbacks.cmsEditText(pageKey)).row();
-      break;
-  }
-
-  keyboard
-    .text("🖼 تنظیم بنر", Callbacks.cmsSetMedia(pageKey))
-    .text("🗑 حذف بنر", Callbacks.cmsDelMedia(pageKey))
-    .row()
-    .text("🎛 تغییر چیدمان (ستون)", Callbacks.cmsToggleLayout(pageKey))
-    .row();
-
+  // As per dual-layer UI architecture, CMS controls have been strictly isolated 
+  // into the dedicated Admin Panel. This function now just returns the keyboard.
   return keyboard;
 }

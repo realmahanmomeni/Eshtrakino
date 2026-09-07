@@ -2,6 +2,7 @@ import type { Api, InlineKeyboard } from "grammy";
 import { InputFile } from "grammy";
 import type { Decimal } from "@prisma/client/runtime/library";
 import { formatToman } from "../../lib/money";
+import { invoiceService } from "../invoices/InvoiceService";
 import {
   settingsService,
   LOG_GROUP_ID_KEY,
@@ -107,9 +108,9 @@ export class GroupLogger {
     receiptFileId: string,
     username: string,
     replyMarkup?: InlineKeyboard,
-  ): Promise<void> {
+  ): Promise<number | null> {
     const chatId = await this.getLogGroupId();
-    if (!chatId) return;
+    if (!chatId) return null;
 
     const threadId = await this.ensureTopic(
       api,
@@ -130,14 +131,49 @@ export class GroupLogger {
     ].join("\n");
 
     try {
-      await api.sendPhoto(chatId, receiptFileId, {
+      const sent = await api.sendPhoto(chatId, receiptFileId, {
         caption,
         parse_mode: "Markdown",
         message_thread_id: threadId,
         reply_markup: replyMarkup,
       });
+      await invoiceService.setLogMessageId(invoiceId, sent.message_id);
+      return sent.message_id;
     } catch (err) {
       console.warn("[GroupLogger] logWalletTopUpRequest failed:", err);
+      return null;
+    }
+  }
+
+  async logPurchaseReceipt(
+    api: Api,
+    invoiceId: number,
+    caption: string,
+    receiptFileId: string,
+    replyMarkup?: InlineKeyboard,
+  ): Promise<number | null> {
+    const chatId = await this.getLogGroupId();
+    if (!chatId) return null;
+
+    const threadId = await this.ensureTopic(
+      api,
+      chatId,
+      LOG_PURCHASE_TOPIC_ID_KEY,
+      PURCHASE_TOPIC_NAME,
+    );
+
+    try {
+      const sent = await api.sendPhoto(chatId, receiptFileId, {
+        caption,
+        parse_mode: "Markdown",
+        message_thread_id: threadId,
+        reply_markup: replyMarkup,
+      });
+      await invoiceService.setLogMessageId(invoiceId, sent.message_id);
+      return sent.message_id;
+    } catch (err) {
+      console.warn("[GroupLogger] logPurchaseReceipt failed:", err);
+      return null;
     }
   }
 
@@ -280,35 +316,72 @@ export class GroupLogger {
   async logNewTicket(
     api: Api,
     ticketId: number,
-    user: { telegramId: string },
+    user: { telegramId: string; name?: string },
     text: string,
-  ): Promise<number> {
-    const chatId = await this.getLogGroupId();
-    if (!chatId) {
-      throw new Error("LOG_GROUP_ID is not configured");
+  ): Promise<number | null> {
+    const msgText = [
+      `🎫 *تیکت جدید: #${ticketId}*`,
+      `👤 کاربر: [${user.name || "User"}](tg://user?id=${user.telegramId})`,
+      "",
+      "متن پیام:",
+      text,
+    ].join("\n");
+
+    const replyMarkup = {
+      inline_keyboard: [
+        [
+          { text: "💬 پاسخ به تیکت", callback_data: `adm:tkt:reply:${ticketId}` },
+          { text: "🔒 بستن تیکت", callback_data: `adm:ticket:close:${ticketId}` }
+        ],
+      ],
+    };
+
+    // 1. Notify Log Group
+    let groupMessageId: number | null = null;
+    try {
+      const chatId = await this.getLogGroupId();
+      if (chatId) {
+        const threadId = await this.ensureTopic(api, chatId, LOG_TICKET_TOPIC_ID_KEY, TICKET_TOPIC_NAME);
+        const sent = await api.sendMessage(chatId, msgText, {
+          parse_mode: "Markdown",
+          message_thread_id: threadId,
+          reply_markup: replyMarkup,
+        });
+        groupMessageId = sent.message_id;
+      }
+    } catch (err) {
+      console.warn("[GroupLogger] logNewTicket group failed:", err);
     }
 
-    const threadId = await this.ensureTopic(api, chatId, LOG_TICKET_TOPIC_ID_KEY, TICKET_TOPIC_NAME);
-    const sent = await api.sendMessage(
-      chatId,
-      [
-        `🎫 *تیکت جدید: #${ticketId}*`,
-        `👤 کاربر: [User](tg://user?id=${user.telegramId})`,
-        "",
-        "متن پیام:",
-        text,
-      ].join("\n"),
-      {
-        parse_mode: "Markdown",
-        message_thread_id: threadId,
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "🔒 بستن تیکت", callback_data: `adm:ticket:close:${ticketId}` }],
-          ],
-        },
-      },
-    );
-    return sent.message_id;
+    // 2. Direct Message to SUPPORT admins
+    try {
+      const { prisma } = await import("../../lib/prisma.js");
+      const { env } = await import("../../config/env.js");
+      
+      const dbAdmins = await prisma.user.findMany({
+        where: { adminPermissions: { has: "SUPPORT" } },
+        select: { telegramId: true }
+      });
+      
+      const adminIds = new Set<number>();
+      for (const a of dbAdmins) adminIds.add(Number(a.telegramId));
+      for (const envId of env.adminIds) adminIds.add(envId);
+
+      for (const adminId of adminIds) {
+        try {
+          await api.sendMessage(adminId, msgText, {
+            parse_mode: "Markdown",
+            reply_markup: replyMarkup,
+          });
+        } catch (e) {
+           // silently ignore blocked admins
+        }
+      }
+    } catch (err) {
+      console.warn("[GroupLogger] logNewTicket dm failed:", err);
+    }
+
+    return groupMessageId;
   }
 
   /** Create all standard log-group forum topics up front (idempotent via ensureTopic). */

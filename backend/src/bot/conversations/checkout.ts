@@ -4,7 +4,7 @@ import { invoiceService } from "../../services/invoices/InvoiceService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
 import { formatToman, parseUserInputData } from "../../lib/money";
 import { toPlain } from "../../lib/plain";
-import { waitPhoto, waitText } from "./wait";
+import { ensurePanel, type PanelRef, waitPhoto, waitText } from "./wait";
 import {
   mainMenuKeyboard,
   paymentMethodsKeyboard,
@@ -15,6 +15,31 @@ import { buildCheckoutPaymentKeyboard } from "../keyboards/paymentChoice";
 import { deliveryTypeLabel, emojiForLabel } from "../keyboards/grid";
 import { env, isAdminTelegramId } from "../../config/env";
 import { ticketService } from "../../services/tickets/TicketService";
+import { discountService } from "../../services/discount/DiscountService";
+import { ConvCb } from "../admin/keyboards";
+import { safeDeleteMessage } from "../utils/safeEdit";
+import { groupLogger } from "../../services/logger/GroupLogger";
+
+function renderInvoiceAmountLines(invoice: {
+  amount: any;
+  originalAmount?: any;
+  discountCode?: string | null;
+  discountPercent?: number | null;
+  discountAmount?: any;
+}): string[] {
+  if (
+    invoice.discountCode &&
+    invoice.originalAmount &&
+    Number(invoice.discountAmount) > 0
+  ) {
+    return [
+      `💵 مبلغ اولیه: ~${formatToman(invoice.originalAmount)}~`,
+      `🏷 تخفیف (${invoice.discountPercent}٪): -${formatToman(invoice.discountAmount)}`,
+      `💵 مبلغ نهایی: *${formatToman(invoice.amount)}*`,
+    ];
+  }
+  return [`💵 مبلغ: *${formatToman(invoice.amount)}*`];
+}
 
 function menuKb(hasPending: boolean, telegramId?: number) {
   return mainMenuKeyboard(hasPending, isAdminTelegramId(telegramId));
@@ -146,6 +171,31 @@ export async function checkoutConversation(
 
     if (!createResult.ok) {
       if (createResult.code === "PENDING") {
+        const refreshed = await conversation.external(async () => {
+          const r = await invoiceService.refreshInvoicePriceIfUsd(createResult.pendingId);
+          return r
+            ? {
+                priceChanged: r.priceChanged,
+                oldPrice: r.oldPrice,
+                newPrice: r.newPrice,
+              }
+            : null;
+        });
+        if (refreshed?.priceChanged) {
+          const oldPriceFormatted = refreshed.oldPrice.toLocaleString("en-US");
+          const newPriceFormatted = refreshed.newPrice.toLocaleString("en-US");
+          await ctx.reply(
+            [
+              "🔄 بروزرسانی مبلغ فاکتور",
+              "",
+              "کاربر گرامی، با توجه به اینکه این سرویس با نرخ پایه دلاری محاسبه میشود و از زمان صدور فاکتور قبلی نرخ ارز تغییر کرده است، مبلغ سفارش شما مجدداً محاسبه و بهروزرسانی شد.",
+              "",
+              `▫️ مبلغ قبلی: ${oldPriceFormatted} تومان`,
+              `▫️ مبلغ جدید: ${newPriceFormatted} تومان`,
+            ].join("\n"),
+          );
+        }
+
         await ctx.reply(
           [
             "⛔ *فاکتور باز*",
@@ -176,7 +226,8 @@ export async function checkoutConversation(
       return;
     }
 
-    const invoice = createResult.invoice;
+    let currentInvoice = createResult.invoice;
+    let hasDiscount = Boolean((currentInvoice as any).discountCode);
 
     await conversation.external((c) => {
       c.session.checkoutProductId = undefined;
@@ -188,7 +239,9 @@ export async function checkoutConversation(
     });
 
     const paymentKb = await conversation.external(() =>
-      buildCheckoutPaymentKeyboard(invoice.id, balanceLabel),
+      buildCheckoutPaymentKeyboard(currentInvoice.id, balanceLabel, {
+        hasDiscount,
+      }),
     );
 
     const inputLines =
@@ -200,24 +253,204 @@ export async function checkoutConversation(
           ]
         : [];
 
-    await ctx.reply(
-      [
-        "✅ *فاکتور ساخته شد*",
-        "",
-        `🧾 شماره: *#${invoice.id}*`,
-        `${emojiForLabel(product.name)} محصول: *${product.name}*`,
-        `💵 مبلغ: *${formatToman(invoice.amount)}*`,
-        `📊 وضعیت: *${invoice.status}*`,
-        `🚚 ${deliveryTypeLabel(product.deliveryType)}`,
-        ...inputLines,
-        "",
-        "روش پرداخت را انتخاب کنید:",
-      ].join("\n"),
-      {
-        parse_mode: "Markdown",
-        reply_markup: paymentKb,
-      },
-    );
+    const renderInvoiceText = (inv: typeof currentInvoice) => [
+      "✅ *فاکتور ساخته شد*",
+      "",
+      `🧾 شماره: *#${inv.id}*`,
+      `${emojiForLabel(product.name)} محصول: *${product.name}*`,
+      ...renderInvoiceAmountLines(inv as any),
+      `📊 وضعیت: *${inv.status}*`,
+      `🚚 ${deliveryTypeLabel(product.deliveryType)}`,
+      ...inputLines,
+      "",
+      "روش پرداخت را انتخاب کنید:",
+    ].join("\n");
+
+    const sentMsg = await ctx.reply(renderInvoiceText(currentInvoice), {
+      parse_mode: "Markdown",
+      reply_markup: paymentKb,
+    });
+
+    let panel: PanelRef = {
+      chatId: sentMsg.chat.id,
+      messageId: sentMsg.message_id,
+    };
+
+    const cancelKb = {
+      inline_keyboard: [[{ text: "🔴 بازگشت", callback_data: ConvCb.cancel }]],
+    };
+
+    while (true) {
+      const update = await conversation.waitFor([
+        "callback_query:data",
+        "message:text",
+      ]);
+
+      const cbData = update.callbackQuery?.data;
+
+      // Handle Discount Code Button
+      if (cbData && /^(?:discount:apply:|inv:dsc:)/.test(cbData)) {
+        await update.answerCallbackQuery();
+
+        if (update.callbackQuery?.message?.message_id && update.chat?.id) {
+          panel = {
+            chatId: update.chat.id,
+            messageId: update.callbackQuery.message.message_id,
+          };
+        }
+
+        const prompt = [
+          "🏷 *اعمال کد تخفیف*",
+          "",
+          `🧾 شماره فاکتور: *#${currentInvoice.id}*`,
+          `💵 مبلغ فعلی: *${formatToman(currentInvoice.amount)}*`,
+          "",
+          "🏷 لطفاً کد تخفیف خود را ارسال کنید:",
+        ].join("\n");
+
+        panel = await ensurePanel(update, prompt, cancelKb, panel);
+
+        while (true) {
+          const discountInput = await conversation.waitFor([
+            "message:text",
+            "callback_query:data",
+          ]);
+
+          // Handle Back / Cancel Button
+          if (discountInput.callbackQuery?.data === ConvCb.cancel) {
+            try {
+              await discountInput.answerCallbackQuery({ text: "بازگشت" });
+            } catch {}
+
+            const curKb = await conversation.external(() =>
+              buildCheckoutPaymentKeyboard(currentInvoice.id, balanceLabel, {
+                hasDiscount,
+              }),
+            );
+            panel = await ensurePanel(
+              discountInput,
+              renderInvoiceText(currentInvoice),
+              curKb,
+              panel,
+            );
+            break;
+          }
+
+          if (discountInput.callbackQuery) {
+            if (
+              /^(?:discount:apply:|inv:dsc:)/.test(
+                discountInput.callbackQuery.data || "",
+              )
+            ) {
+              try {
+                await discountInput.answerCallbackQuery();
+              } catch {}
+              continue;
+            }
+            // Other button clicked while asking for discount code (e.g. payment/cancel)
+            const curKb = await conversation.external(() =>
+              buildCheckoutPaymentKeyboard(currentInvoice.id, balanceLabel, {
+                hasDiscount,
+              }),
+            );
+            panel = await ensurePanel(
+              discountInput,
+              renderInvoiceText(currentInvoice),
+              curKb,
+              panel,
+            );
+            await conversation.halt({ next: true });
+            return;
+          }
+
+          const rawText = (discountInput.message?.text ?? "").trim();
+          if (rawText === "/cancel") {
+            const curKb = await conversation.external(() =>
+              buildCheckoutPaymentKeyboard(currentInvoice.id, balanceLabel, {
+                hasDiscount,
+              }),
+            );
+            panel = await ensurePanel(
+              discountInput,
+              renderInvoiceText(currentInvoice),
+              curKb,
+              panel,
+            );
+            break;
+          }
+
+          if (!rawText) continue;
+
+          // Delete user message to keep chat clean
+          if (discountInput.chat?.id && discountInput.message?.message_id) {
+            await safeDeleteMessage(
+              discountInput.api,
+              discountInput.chat.id,
+              discountInput.message.message_id,
+            );
+          }
+
+          const codeStr = rawText.toUpperCase();
+
+          try {
+            const result = await conversation.external(async () => {
+              const res = await discountService.applyDiscountToInvoice(
+                currentInvoice.id,
+                codeStr,
+                productId,
+              );
+              return {
+                invoice: toPlain(res.invoice),
+                calc: toPlain(res.calc),
+              };
+            });
+
+            currentInvoice = result.invoice;
+            hasDiscount = true;
+
+            const successMsg = [
+              "✅ *کد تخفیف با موفقیت اعمال شد!*",
+              "",
+              `▫️ درصد تخفیف: *${result.calc.percentage}٪*`,
+              `▫️ مبلغ کسر شده: *${formatToman(result.calc.discountAmount)}*`,
+              `▫️ مبلغ نهایی قابل پرداخت: *${formatToman(result.calc.finalAmount)}*`,
+            ].join("\n");
+
+            await ctx.reply(successMsg, { parse_mode: "Markdown" });
+
+            // RE-RENDER invoice payment screen with updated lower amount
+            const refreshedKb = await conversation.external(() =>
+              buildCheckoutPaymentKeyboard(currentInvoice.id, balanceLabel, {
+                hasDiscount: true,
+              }),
+            );
+
+            panel = await ensurePanel(
+              ctx,
+              renderInvoiceText(currentInvoice),
+              refreshedKb,
+              panel,
+            );
+            break;
+          } catch (err: any) {
+            const errMsg = err?.message || "کد تخفیف وارد شده معتبر نیست.";
+            const retryPrompt = [
+              `❌ *خطا:* ${errMsg}`,
+              "",
+              "🏷 لطفاً کد تخفیف دیگری ارسال کنید یا دکمه بازگشت را بزنید:",
+            ].join("\n");
+
+            panel = await ensurePanel(ctx, retryPrompt, cancelKb, panel);
+          }
+        }
+      } else {
+        // Any payment method (pay:wallet, pay:card, pay:swap, pay:custom),
+        // cancel invoice (cancel_inv), main menu, or text command:
+        // Halt conversation cleanly with next: true so downstream global handlers process it!
+        await conversation.halt({ next: true });
+        return;
+      }
+    }
   } catch (err) {
     logConvError("checkoutConversation", err);
     try {
@@ -381,6 +614,16 @@ export async function uploadReceiptConversation(
       "",
       "👇 رسید را تایید یا رد کنید:",
     ].join("\n");
+
+    await conversation.external(async () => {
+      await groupLogger.logPurchaseReceipt(
+        ctx.api,
+        invoice.id,
+        caption,
+        fileId,
+        adminInvoiceReviewKeyboard(invoice.id),
+      );
+    });
 
     for (const adminId of env.adminIds) {
       try {

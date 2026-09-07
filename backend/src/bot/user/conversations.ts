@@ -144,34 +144,38 @@ export async function createTicketConversation(
       return;
     }
 
-    const user = await conversation.external(async () =>
-      invoiceService.ensureUser(BigInt(ctx.from!.id)),
-    );
+    const userObj = await conversation.external(async () => {
+      const u = await invoiceService.ensureUser(BigInt(ctx.from!.id));
+      return { id: u.id, telegramIdStr: String(u.telegramId) };
+    });
 
-    const ticket = await conversation.external(async () =>
-      ticketService.createUserMessage(user.id, text),
-    );
+    const ticketObj = await conversation.external(async () => {
+      const t = await ticketService.createUserMessage(userObj.id, text);
+      const lastMessage = t.messages[t.messages.length - 1];
+      return { id: t.id, lastMessageId: lastMessage?.id };
+    });
 
-    const lastMessage = ticket.messages[ticket.messages.length - 1];
-    if (!lastMessage) {
+    if (!ticketObj.lastMessageId) {
       throw new Error("Ticket message was not created");
     }
 
     const messageId = await conversation.external(async () =>
       groupLogger.logNewTicket(
         ctx.api,
-        ticket.id,
-        { telegramId: user.telegramId.toString() },
+        ticketObj.id,
+        { telegramId: userObj.telegramIdStr },
         text,
       ),
     );
 
-    await conversation.external(async () => {
-      await ticketService.setGroupMessageId(lastMessage.id, messageId);
-    });
+    if (messageId !== null) {
+      await conversation.external(async () => {
+        await ticketService.setGroupMessageId(ticketObj.lastMessageId!, messageId);
+      });
+    }
 
     await ctx.reply(
-      `✅ پیام شما با موفقیت ثبت شد و به زودی پاسخ داده خواهد شد. (کد پیگیری: \`#${ticket.id}\`)`,
+      `✅ پیام شما با موفقیت ثبت شد و به زودی پاسخ داده خواهد شد. (کد پیگیری: \`#${ticketObj.id}\`)`,
       { parse_mode: "Markdown" },
     );
   } catch (err) {

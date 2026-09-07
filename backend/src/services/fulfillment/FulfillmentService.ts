@@ -6,6 +6,7 @@ import { groupLogger } from "../logger/GroupLogger";
 import { prisma } from "../../lib/prisma";
 import { formatToman } from "../../lib/money";
 import { provideCredentialsKeyboard } from "../../bot/keyboards/builders";
+import { discountService } from "../discount/DiscountService";
 
 function resolveFulfillmentType(
   productDeliveryType: DeliveryType,
@@ -27,6 +28,10 @@ export class FulfillmentService {
     const invoice = await invoiceService.getById(invoiceId);
     if (!invoice || invoice.isWalletTopUp || !invoice.product) {
       return;
+    }
+
+    if ((invoice as any).discountCode) {
+      await discountService.consumeDiscountCode((invoice as any).discountCode);
     }
 
     if (invoice.product.durationDays && invoice.product.durationDays > 0) {

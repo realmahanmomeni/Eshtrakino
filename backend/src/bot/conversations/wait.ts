@@ -1,6 +1,6 @@
 import type { EshtrakinoConversation, SessionContext } from "../context";
 import { ConvCb } from "../admin/keyboards";
-import { isMessageNotModified, safeEdit, safeEditById } from "../utils/safeEdit";
+import { isMessageNotModified, safeEdit, safeEditById, safeDeleteMessage } from "../utils/safeEdit";
 
 const cancelKeyboard = {
   inline_keyboard: [[{ text: "❌ لغو", callback_data: ConvCb.cancel }]],
@@ -59,11 +59,7 @@ async function deleteUserMessage(ctx: SessionContext): Promise<void> {
   const chatId = ctx.chat?.id;
   const messageId = ctx.message?.message_id;
   if (chatId == null || messageId == null) return;
-  try {
-    await ctx.api.deleteMessage(chatId, messageId);
-  } catch (err) {
-    console.error("Could not delete user message:", err);
-  }
+  await safeDeleteMessage(ctx.api, chatId, messageId);
 }
 
 export async function waitText(

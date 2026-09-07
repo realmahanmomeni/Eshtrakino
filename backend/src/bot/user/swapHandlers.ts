@@ -8,13 +8,14 @@ import { Decimal } from "@prisma/client/runtime/library";
 import type { SwapWalletInvoice } from "@prisma/client";
 import type { BotContext, EshtrakinoConversation, SessionContext } from "../context";
 import { Callbacks } from "../keyboards/callbacks";
+import { BUTTON_CUSTOM_EMOJIS } from "../keyboards/buttonEmojis";
 import { safeEdit } from "../utils/safeEdit";
 import {
   ensurePanel,
   panelFromCtx,
   waitTextOnPanel,
 } from "../conversations/wait";
-import { invoiceService } from "../../services/invoices/InvoiceService";
+import { invoiceService, buildPriceUpdateNotice } from "../../services/invoices/InvoiceService";
 import { formatToman } from "../../lib/money";
 import { toPlain } from "../../lib/plain";
 import {
@@ -54,14 +55,42 @@ export const DEFAULT_DEPOSIT_AMOUNTS = [
   new Decimal("50"),
 ];
 
-export function depositAmountsKeyboard(): InlineKeyboard {
+export type DepositAmountOption =
+  | Decimal
+  | number
+  | string
+  | { text: string; data?: string; callback_data?: string };
+
+export function depositAmountsKeyboard(
+  amounts?: DepositAmountOption[],
+): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const amt of DEFAULT_DEPOSIT_AMOUNTS) {
-    const label = amt.toFixed(2).replace(/\.?0+$/, "");
-    kb.text(`💵 $${label}`, Callbacks.walletSwapAmount(Number(amt))).row();
+  const list = amounts && amounts.length > 0 ? amounts : DEFAULT_DEPOSIT_AMOUNTS;
+  for (const item of list) {
+    if (typeof item === "object" && item !== null && !("toFixed" in item) && "text" in item) {
+      const text = item.text;
+      const data = item.data ?? item.callback_data ?? `deposit_amt:${text}`;
+      kb.text({ text, icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.DEPOSIT_AMOUNT }, data).row();
+    } else if (typeof item === "string") {
+      const rawNum = item.replace(/[^0-9.]/g, "");
+      const cbData = rawNum ? `swap_amt:${rawNum}` : `deposit_amt:${item}`;
+      kb.text({ text: item, icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.DEPOSIT_AMOUNT }, cbData).row();
+    } else if (typeof item === "number") {
+      const text = item >= 1000 ? `${item.toLocaleString("en-US")} تومان` : `$${item}`;
+      kb.text(
+        { text, icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.DEPOSIT_AMOUNT },
+        Callbacks.walletSwapAmount(item),
+      ).row();
+    } else {
+      const label = item.toFixed(2).replace(/\.?0+$/, "");
+      kb.text(
+        { text: `$${label}`, icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.DEPOSIT_AMOUNT },
+        Callbacks.walletSwapAmount(Number(item)),
+      ).row();
+    }
   }
   kb.text("⌨️ مبلغ دلخواه (USD)", Callbacks.walletSwapAmountCustom).row();
-  kb.text("🔙 بازگشت", Callbacks.wallet);
+  kb.text({ text: "بازگشت", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK }, Callbacks.wallet);
   return kb;
 }
 
@@ -73,17 +102,23 @@ export function invoiceKeyboard(
   const kb = new InlineKeyboard();
   const payUrl = (paymentLink || "").trim();
   if (payUrl.startsWith("http://") || payUrl.startsWith("https://")) {
-    kb.url("💳 پرداخت آنلاین", payUrl).row();
+    kb.url("🟢 پرداخت آنلاین (SwapWallet)", payUrl).row();
   }
   kb.text("🔄 بررسی وضعیت پرداخت", Callbacks.walletSwapVerify(invoiceId)).row();
-  kb.text("❌ لغو فاکتور سواپ", Callbacks.walletSwapCancel(invoiceId)).row();
+  kb.text(
+    { text: "لغو فاکتور سواپ ✕", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.CANCEL },
+    Callbacks.walletSwapCancel(invoiceId),
+  ).row();
   if (options?.checkoutInvoiceId) {
     kb.text(
-      "🔙 بازگشت به روش‌های پرداخت",
+      { text: "بازگشت به روش‌های پرداخت", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK },
       Callbacks.pay(options.checkoutInvoiceId),
     ).row();
   } else {
-    kb.text("🔙 بازگشت", Callbacks.wallet).row();
+    kb.text(
+      { text: "بازگشت", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK },
+      Callbacks.wallet,
+    ).row();
   }
   return kb;
 }
@@ -152,12 +187,18 @@ function creditedKeyboard(checkoutInvoiceId: number | null): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (checkoutInvoiceId) {
     kb.text(
-      "💰 پرداخت از کیف پول و تکمیل خرید",
+      { text: "تایید و پرداخت از کیف پول و تکمیل خرید", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.CONFIRM_PAYMENT },
       Callbacks.payWallet(checkoutInvoiceId),
     ).row();
-    kb.text("🔙 روش‌های پرداخت", Callbacks.pay(checkoutInvoiceId)).row();
+    kb.text(
+      { text: "روش‌های پرداخت", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK },
+      Callbacks.pay(checkoutInvoiceId),
+    ).row();
   } else {
-    kb.text("🔙 بازگشت", Callbacks.wallet).row();
+    kb.text(
+      { text: "بازگشت", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK },
+      Callbacks.wallet,
+    ).row();
   }
   return kb;
 }
@@ -471,15 +512,31 @@ export function registerSwapHandlers(bot: Bot<BotContext>): void {
       return;
     }
 
+    const refreshed = await invoiceService.refreshInvoicePriceIfUsd(productInvoiceId);
+    const currentPending = (refreshed?.invoice ?? pending) as typeof pending;
+    if (refreshed?.priceChanged) {
+      await ctx.reply(buildPriceUpdateNotice(refreshed.oldPrice, refreshed.newPrice));
+    }
+
     try {
-      const tomanAmount = Number(pending.amount);
+      const tomanAmount = Number(currentPending.amount);
       if (!Number.isFinite(tomanAmount) || tomanAmount <= 0) {
         await ctx.answerCallbackQuery({ text: "مبلغ فاکتور نامعتبر", show_alert: true });
         return;
       }
 
-      const liveRate = await getLiveUsdtIrtRate();
-      const amountUsd = quantizeUsdt(tomanAmount / liveRate);
+      let amountUsd: Decimal;
+      if (
+        currentPending.product?.currency === "USD" &&
+        currentPending.product?.usdPrice != null &&
+        currentPending.product.usdPrice > 0
+      ) {
+        amountUsd = quantizeUsdt(currentPending.product.usdPrice);
+      } else {
+        const liveRate = await getLiveUsdtIrtRate();
+        amountUsd = quantizeUsdt(tomanAmount / liveRate);
+      }
+
       if (amountUsd.lte(0)) {
         await ctx.answerCallbackQuery({
           text: "مبلغ دلاری قابل محاسبه نیست.",
@@ -489,14 +546,15 @@ export function registerSwapHandlers(bot: Bot<BotContext>): void {
       }
 
       const active = await findActivePendingInvoice(user.id);
+      const productName = currentPending.product?.name ?? pending.product?.name ?? "";
       if (active) {
         const linked = parseCheckoutInvoiceId(active.note);
         if (linked === productInvoiceId) {
           await ctx.answerCallbackQuery();
           await renderInvoice(ctx, active, undefined, {
             checkoutInvoiceId: productInvoiceId,
-            productName: pending.product.name,
-            amountTomanLabel: formatToman(pending.amount),
+            productName,
+            amountTomanLabel: formatToman(currentPending.amount),
           });
           return;
         }
@@ -507,8 +565,8 @@ export function registerSwapHandlers(bot: Bot<BotContext>): void {
           "⚠️ شما یک فاکتور سواپ باز دارید. ابتدا آن را پرداخت یا لغو کنید.",
           {
             checkoutInvoiceId: linked ?? undefined,
-            productName: pending.product.name,
-            amountTomanLabel: formatToman(pending.amount),
+            productName,
+            amountTomanLabel: formatToman(currentPending.amount),
           },
         );
         return;
@@ -523,8 +581,8 @@ export function registerSwapHandlers(bot: Bot<BotContext>): void {
       await ctx.answerCallbackQuery({ text: "فاکتور سواپ ساخته شد" });
       await renderInvoice(ctx, invoice, undefined, {
         checkoutInvoiceId: productInvoiceId,
-        productName: pending.product.name,
-        amountTomanLabel: formatToman(pending.amount),
+        productName,
+        amountTomanLabel: formatToman(currentPending.amount),
       });
     } catch (err) {
       if (err instanceof SwapPayError) {

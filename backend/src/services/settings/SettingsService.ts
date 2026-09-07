@@ -15,6 +15,12 @@ export const SWAPPAY_API_KEY = "SWAPPAY_API_KEY";
 export const SWAPPAY_WALLET_ADDRESS = "SWAPPAY_WALLET_ADDRESS";
 /** "true" | "false" — whether Swap Wallet appears for users */
 export const SWAPPAY_ENABLED = "SWAPPAY_ENABLED";
+export const FORCE_JOIN_ENABLED = "FORCE_JOIN_ENABLED";
+export const FORCE_JOIN_CHANNEL_ID = "FORCE_JOIN_CHANNEL_ID";
+export const FORCE_JOIN_INVITE_LINK = "FORCE_JOIN_INVITE_LINK";
+export const FORCE_JOIN_TEXT = "FORCE_JOIN_TEXT";
+/** Last known USDT/USD to Toman exchange rate fallback */
+export const LAST_EXCHANGE_RATE_KEY = "LAST_EXCHANGE_RATE_USDT_TOMAN";
 
 export class SettingsService {
   async getSetting(key: string): Promise<string | null> {

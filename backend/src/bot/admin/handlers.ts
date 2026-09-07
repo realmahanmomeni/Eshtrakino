@@ -2,10 +2,18 @@ import { Composer, type Bot } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
 import { InvoiceStatus, TicketStatus } from "@prisma/client";
 import type { BotContext } from "../context";
-import { adminOnlyMiddleware, assertAdmin } from "./middleware";
+import { adminOnlyMiddleware } from "./middleware";
+import { hasAnyAdminAccess, hasPermission } from "./rbac";
+import { rbacAdmin, rbacAddAdminConversation } from "./rbacHandlers";
+import { broadcastConversation } from "./broadcastConversation";
+
 import {
   adminBackupMenuKeyboard,
   adminCatalogKeyboard,
+  adminSubCategoriesKeyboard,
+  adminCmsMenuKeyboard,
+  adminCmsPanelKeyboard,
+  adminForceJoinKeyboard,
   adminDeleteCategoriesKeyboard,
   adminHomeKeyboard,
   adminPaymentListKeyboard,
@@ -19,18 +27,20 @@ import {
   adminTicketsKeyboard,
   adminUserProfileKeyboard,
   adminUsersListKeyboard,
+  adminDiscountHubKeyboard,
 } from "./keyboards";
 import { Callbacks } from "../keyboards/callbacks";
 import { catalogService } from "../../services/catalog/CatalogService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
 import { crmService } from "../../services/crm/CrmService";
-import { invoiceService } from "../../services/invoices/InvoiceService";
+import { invoiceService, InvoiceInvalidStateError } from "../../services/invoices/InvoiceService";
 import { ticketService } from "../../services/tickets/TicketService";
 import { groupLogger } from "../../services/logger/GroupLogger";
 import { backupService } from "../../services/backup/BackupService";
 import { inventoryService } from "../../services/inventory/InventoryService";
 import { fulfillmentService } from "../../services/fulfillment/FulfillmentService";
 import { walletService } from "../../services/wallet/WalletService";
+import { discountService } from "../../services/discount/DiscountService";
 import {
   adminUserService,
   parseUserAnalyticsFilter,
@@ -38,6 +48,9 @@ import {
 } from "../../services/adminUsers/AdminUserService";
 import {
   settingsService,
+  FORCE_JOIN_ENABLED,
+  FORCE_JOIN_CHANNEL_ID,
+  FORCE_JOIN_INVITE_LINK,
   SWAPPAY_ENABLED,
 } from "../../services/settings/SettingsService";
 import { formatToman } from "../../lib/money";
@@ -45,6 +58,7 @@ import { deliveryTypeLabel } from "../keyboards/grid";
 import { BannerAssets } from "../assets/banners";
 import {
   editProductConversation,
+  editSubCategoryConversation,
   restockProductConversation,
   setCredentialReqConversation,
   setProductStockAlertConversation,
@@ -52,6 +66,7 @@ import {
 } from "./catalog";
 import {
   addCategoryConversation,
+  addSubCategoryConversation,
   addPaymentMethodConversation,
   addProductConversation,
   adminReplyTicketConversation,
@@ -61,6 +76,14 @@ import {
   setLogGroupConversation,
   setSwapApiKeyConversation,
   setSwapWalletAddressConversation,
+  fjSetChannelId,
+  fjSetLink,
+  fjSetText,
+  addDiscountConversation,
+  deleteDiscountCodesConversation,
+  formatDiscountHubText,
+  editCategoryCmsConversation,
+  editSubCategoryCmsConversation,
 } from "./conversations";
 import {
   editAdminUserBalanceConversation,
@@ -71,16 +94,18 @@ import { editPageTextConversation } from "../cms/editPageTextConversation";
 import { adminCmsMediaConversation } from "../cms/adminCmsMediaConversation";
 import { presentCmsPage } from "../cms/presentPage";
 import {
+  presentCmsCategoryList,
+  presentCmsCategoryView,
+  presentCmsSubCategoryList,
+  presentCmsSubCategoryView,
+  presentCmsProductCategoryPick,
+  presentCmsProductList,
+  presentCmsProductView,
   cmsAddCategoryConversation,
   cmsAddProductConversation,
   cmsEditProductPriceConversation,
   cmsRenameCategoryConversation,
   cmsRenameProductConversation,
-  presentCmsCategoryList,
-  presentCmsCategoryView,
-  presentCmsProductCategoryPick,
-  presentCmsProductList,
-  presentCmsProductView,
 } from "../cms/shopCms";
 import { isPageKey, pageContentService } from "../../services/cms/PageContentService";
 import { safeEdit, safeEditMedia } from "../utils/safeEdit";
@@ -94,6 +119,13 @@ const RECEIPT_STATUS_LABELS: Record<string, string> = {
 
 function formatReceiptDate(date: Date): string {
   return date.toLocaleString("fa-IR", { timeZone: "Asia/Tehran" });
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 /** Midnight today in Asia/Tehran as a UTC Date. */
@@ -125,6 +157,8 @@ async function adminTicketsMenuKeyboard(): Promise<ReturnType<typeof adminTicket
 
 export function registerAdmin(bot: Bot<BotContext>): void {
   bot.use(createConversation(addCategoryConversation, "addCategory"));
+  bot.use(createConversation(addSubCategoryConversation, "addSubCategory"));
+  bot.use(createConversation(editSubCategoryConversation, "editSubCategory"));
   bot.use(createConversation(addProductConversation, "addProduct"));
   bot.use(createConversation(editProductConversation, "editProduct"));
   bot.use(createConversation(restockProductConversation, "restockProduct"));
@@ -149,9 +183,22 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   bot.use(createConversation(cmsAddProductConversation, "cmsAddProduct"));
   bot.use(createConversation(cmsRenameProductConversation, "cmsRenameProduct"));
   bot.use(createConversation(cmsEditProductPriceConversation, "cmsEditProductPrice"));
+  bot.use(createConversation(fjSetChannelId, "fjSetChannelId"));
+  bot.use(createConversation(fjSetLink, "fjSetLink"));
+  bot.use(createConversation(fjSetText, "fjSetText"));
+  bot.use(createConversation(rbacAddAdminConversation, "rbacAddAdminConversation"));
+  bot.use(createConversation(broadcastConversation, "broadcastConversation"));
+  bot.use(createConversation(addDiscountConversation, "addDiscountConversation"));
+  bot.use(createConversation(deleteDiscountCodesConversation, "deleteDiscountCodesConversation"));
+  bot.use(createConversation(editCategoryCmsConversation, "editCategoryCms"));
+  bot.use(createConversation(editCategoryCmsConversation, "editCategoryCmsConversation"));
+  bot.use(createConversation(editSubCategoryCmsConversation, "editSubCategoryCms"));
+  bot.use(createConversation(editSubCategoryCmsConversation, "editSubCategoryCmsConversation"));
+  
+  bot.use(rbacAdmin);
 
   bot.command("admin", async (ctx) => {
-    if (!assertAdmin(ctx)) {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
       await ctx.reply(
         ["⛔️ *دسترسی محدود*", "", "دسترسی ادمین ندارید."].join("\n"),
         { parse_mode: "Markdown" },
@@ -196,6 +243,30 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   });
   admin.use(adminOnlyMiddleware);
 
+  bot.callbackQuery(Callbacks.adminReceipts, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "FINANCE"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const counts = await invoiceService.getReceiptHubCounts();
+    await safeEdit(
+      ctx,
+      [
+        "🧾 *مدیریت رسیدها*",
+        "",
+        "فاکتورها را بر اساس وضعیت بررسی کنید:",
+        "",
+        `⏳ در انتظار تایید: *${counts.pending}*`,
+        `✅ تایید شده: *${counts.approved}*`,
+        `❌ رد شده: *${counts.rejected}*`,
+        "",
+        "👇 یک دسته را انتخاب کنید:",
+      ].join("\n"),
+      adminReceiptCategoriesKeyboard(counts),
+    );
+  });
+
   admin.callbackQuery(Callbacks.adminHome, async (ctx) => {
     await ctx.answerCallbackQuery();
     await safeEdit(
@@ -206,6 +277,200 @@ export function registerAdmin(bot: Bot<BotContext>): void {
         "از منوی زیر بخش مورد نظر را انتخاب کنید:",
       ].join("\n"),
       adminHomeKeyboard(),
+    );
+  });
+
+  bot.callbackQuery(
+    ["admin_discounts:hub", "admin_discounts:refresh", Callbacks.adminDiscountsHub, Callbacks.adminDiscountsRefresh],
+    async (ctx) => {
+      if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+        await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      const codes = await discountService.listAllDiscountCodes();
+      await safeEdit(
+        ctx,
+        formatDiscountHubText(codes),
+        adminDiscountHubKeyboard(),
+      );
+    },
+  );
+
+  bot.callbackQuery(
+    ["admin_discounts:add", Callbacks.adminAddDiscount, Callbacks.adminDiscountsAdd],
+    async (ctx) => {
+      if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+        await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      try {
+        await ctx.conversation.exitAll();
+      } catch {}
+      await ctx.conversation.enter("addDiscountConversation");
+    },
+  );
+
+  bot.callbackQuery(
+    ["admin_discounts:delete", Callbacks.adminDiscountsDelete],
+    async (ctx) => {
+      if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+        await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      try {
+        await ctx.conversation.exitAll();
+      } catch {}
+      await ctx.conversation.enter("deleteDiscountCodesConversation");
+    },
+  );
+
+  bot.callbackQuery("admin:home", async (ctx) => {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await safeEdit(
+      ctx,
+      [
+        "🛠 *پنل مدیریت اشتراکینو*",
+        "",
+        "از منوی زیر بخش مورد نظر را انتخاب کنید:",
+      ].join("\n"),
+      adminHomeKeyboard(),
+    );
+  });
+
+  bot.callbackQuery("adm:force_join", async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "CMS"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const enabled = await settingsService.getBoolSetting(FORCE_JOIN_ENABLED, false);
+    const channelId = await settingsService.getSetting(FORCE_JOIN_CHANNEL_ID);
+    const inviteLink = await settingsService.getSetting(FORCE_JOIN_INVITE_LINK);
+
+    await safeEdit(
+      ctx,
+      "📢 *قفل کانال (جوین اجباری)*\n\nتنظیمات مورد نظر را انتخاب کنید:",
+      adminForceJoinKeyboard({ enabled, channelId, inviteLink }),
+    );
+  });
+
+  bot.callbackQuery("adm:broadcast", async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "USERS"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
+    await ctx.conversation.enter("broadcastConversation");
+  });
+
+  bot.callbackQuery(/^adm:tkt:reply:(\d+)$/, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "SUPPORT"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    ctx.session.adminTargetId = Number(ctx.match![1]);
+    try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
+    await ctx.conversation.enter("adminReplyTicket");
+  });
+
+  bot.callbackQuery(/^adm:ticket:close:(\d+)$/, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "SUPPORT"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    const ticketId = Number(ctx.match![1]);
+    const ticket = await ticketService.closeTicket(ticketId);
+    await ctx.answerCallbackQuery({ text: "تیکت بسته شد" });
+    try {
+      await safeEdit(ctx, `🔒 تیکت #${ticketId} توسط پشتیبانی بسته شد.`, { reply_markup: { inline_keyboard: [] } });
+    } catch {}
+    try {
+      await ctx.api.sendMessage(
+        ticket.user.telegramId.toString(),
+        `🔒 پشتیبانی تیکت شما به شماره #${ticketId} را بست.`
+      );
+    } catch {}
+  });
+
+  admin.callbackQuery("adm:fj:toggle", async (ctx) => {
+    const current = await settingsService.getBoolSetting(FORCE_JOIN_ENABLED, false);
+    await settingsService.setBoolSetting(FORCE_JOIN_ENABLED, !current);
+    await ctx.answerCallbackQuery({ text: !current ? "فعال شد" : "غیرفعال شد" });
+    
+    const channelId = await settingsService.getSetting(FORCE_JOIN_CHANNEL_ID);
+    const inviteLink = await settingsService.getSetting(FORCE_JOIN_INVITE_LINK);
+    await safeEdit(
+      ctx,
+      "📢 *قفل کانال (جوین اجباری)*\n\nتنظیمات مورد نظر را انتخاب کنید:",
+      adminForceJoinKeyboard({ enabled: !current, channelId, inviteLink }),
+    );
+  });
+
+  admin.callbackQuery("adm:fj:set_id", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
+    await ctx.conversation.enter("fjSetChannelId");
+  });
+
+  admin.callbackQuery("adm:fj:set_link", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
+    await ctx.conversation.enter("fjSetLink");
+  });
+
+  admin.callbackQuery("adm:fj:set_text", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
+    await ctx.conversation.enter("fjSetText");
+  });
+
+  admin.callbackQuery("adm:fj:test", async (ctx) => {
+    const channelId = await settingsService.getSetting(FORCE_JOIN_CHANNEL_ID);
+    if (!channelId) {
+      await ctx.answerCallbackQuery({ text: "ابتدا شناسه کانال را تنظیم کنید", show_alert: true });
+      return;
+    }
+    try {
+      const member = await ctx.api.getChatMember(channelId, ctx.me.id);
+      if (["creator", "administrator"].includes(member.status)) {
+        await ctx.answerCallbackQuery({ text: "✅ ربات در کانال ادمین است", show_alert: true });
+      } else {
+        await ctx.answerCallbackQuery({ text: "⚠️ ربات در کانال عضو است اما ادمین نیست!", show_alert: true });
+      }
+    } catch (err) {
+      await ctx.answerCallbackQuery({ text: `❌ خطا در بررسی کانال: ${err}`, show_alert: true });
+    }
+  });
+
+  bot.callbackQuery("adm:cms_menu", async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "CMS"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await safeEdit(
+      ctx,
+      "🖼️ *مدیریت صفحات (CMS)*\n\nبخش مورد نظر را انتخاب کنید:",
+      adminCmsMenuKeyboard(),
+    );
+  });
+
+  admin.callbackQuery(/^adm:cms_panel:(home|shop|account|support|wallet)$/, async (ctx) => {
+    const pageKey = ctx.match![1] as string;
+    await ctx.answerCallbackQuery();
+    await safeEdit(
+      ctx,
+      `⚙️ *مدیریت صفحه: ${pageKey}*\n\nتنظیمات مورد نظر را انتخاب کنید:`,
+      adminCmsPanelKeyboard(pageKey),
     );
   });
 
@@ -271,7 +536,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   });
 
   // —— CMS Shop: Categories ——
-  admin.callbackQuery(Callbacks.cmsCats, async (ctx) => {
+  admin.callbackQuery(/^(?:cms:cats|adm:cms:cats)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     try {
       await ctx.conversation.exitAll();
@@ -297,6 +562,40 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await presentCmsCategoryView(ctx, id, panelFromCtx(ctx));
   });
 
+  admin.callbackQuery(/^adm:cms:cat:media:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    ctx.session.adminCmsCategoryId = id;
+    ctx.session.adminCmsAction = "banner";
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await ctx.conversation.enter("editCategoryCms");
+  });
+
+  admin.callbackQuery(/^adm:cms:cat:desc:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    ctx.session.adminCmsCategoryId = id;
+    ctx.session.adminCmsAction = "desc";
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await ctx.conversation.enter("editCategoryCms");
+  });
+
+  admin.callbackQuery(/^adm:cms:cat:delmedia:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    try {
+      await catalogService.updateCategoryBanner(id, null);
+      await ctx.answerCallbackQuery({ text: "بنر دسته حذف شد" });
+      await presentCmsCategoryView(ctx, id, panelFromCtx(ctx), "🗑 بنر اختصاصی دسته حذف شد و به حالت پیش‌فرض بازگشت.");
+    } catch (err) {
+      console.error("delmedia category error:", err);
+      await ctx.answerCallbackQuery({ text: "خطا در حذف بنر", show_alert: true });
+    }
+  });
+
   admin.callbackQuery(/^adm:cms:cat:rn:(\d+)$/, async (ctx) => {
     const id = Number(ctx.match![1]);
     ctx.session.adminCmsCategoryId = id;
@@ -318,6 +617,55 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     } catch (err) {
       console.error("cms cat delete error:", err);
       await ctx.answerCallbackQuery({ text: "خطا در حذف دسته", show_alert: true });
+    }
+  });
+
+  // —— CMS Shop: SubCategories ——
+  admin.callbackQuery(/^(?:cms:subcats|adm:cms:subcats)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await presentCmsSubCategoryList(ctx, panelFromCtx(ctx));
+  });
+
+  admin.callbackQuery(/^adm:cms:subcat:v:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    await ctx.answerCallbackQuery();
+    await presentCmsSubCategoryView(ctx, id, panelFromCtx(ctx));
+  });
+
+  admin.callbackQuery(/^adm:cms:subcat:media:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    ctx.session.adminCmsSubCategoryId = id;
+    ctx.session.adminCmsAction = "banner";
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await ctx.conversation.enter("editSubCategoryCms");
+  });
+
+  admin.callbackQuery(/^adm:cms:subcat:desc:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    ctx.session.adminCmsSubCategoryId = id;
+    ctx.session.adminCmsAction = "desc";
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await ctx.conversation.enter("editSubCategoryCms");
+  });
+
+  admin.callbackQuery(/^adm:cms:subcat:delmedia:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    try {
+      await catalogService.updateSubCategoryBanner(id, null);
+      await ctx.answerCallbackQuery({ text: "بنر زیردسته حذف شد" });
+      await presentCmsSubCategoryView(ctx, id, panelFromCtx(ctx), "🗑 بنر اختصاصی زیردسته حذف شد و به حالت ارث‌بری/پیش‌فرض بازگشت.");
+    } catch (err) {
+      console.error("delmedia subcategory error:", err);
+      await ctx.answerCallbackQuery({ text: "خطا در حذف بنر", show_alert: true });
     }
   });
 
@@ -397,7 +745,11 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     }
   });
 
-  admin.callbackQuery(Callbacks.adminCatalog, async (ctx) => {
+  bot.callbackQuery(Callbacks.adminCatalog, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "CATALOG"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery();
     await safeEdit(
       ctx,
@@ -408,6 +760,39 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       ].join("\n"),
       adminCatalogKeyboard(),
     );
+  });
+
+  bot.callbackQuery(Callbacks.adminSubCategories, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "CATALOG"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await safeEdit(
+      ctx,
+      [
+        "📑 *مدیریت سرویس‌ها (زیردسته‌ها)*",
+        "",
+        "از این بخش می‌توانید سرویس‌های زیرمجموعه دسته‌ها (مانند Gemini Pro زیرمجموعه هوش مصنوعی) را ایجاد و مدیریت کنید:",
+      ].join("\n"),
+      adminSubCategoriesKeyboard(),
+    );
+  });
+
+  admin.callbackQuery(Callbacks.adminAddSubCategory, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await ctx.conversation.enter("addSubCategory");
+  });
+
+  admin.callbackQuery(Callbacks.adminEditSubCategoryMenu, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await ctx.conversation.enter("editSubCategory");
   });
 
   admin.callbackQuery(Callbacks.adminUsers, async (ctx) => {
@@ -516,26 +901,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await ctx.conversation.enter("editAdminUserBalance");
   });
 
-  admin.callbackQuery(Callbacks.adminReceipts, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const counts = await invoiceService.getReceiptHubCounts();
-    await safeEditMedia(
-      ctx,
-      BannerAssets.welcome,
-      [
-        "🧾 *مدیریت رسیدها*",
-        "",
-        "فاکتورها را بر اساس وضعیت بررسی کنید:",
-        "",
-        `⏳ در انتظار تایید: *${counts.pending}*`,
-        `✅ تایید شده: *${counts.approved}*`,
-        `❌ رد شده: *${counts.rejected}*`,
-        "",
-        "👇 یک دسته را انتخاب کنید:",
-      ].join("\n"),
-      adminReceiptCategoriesKeyboard(counts),
-    );
-  });
+
 
   admin.callbackQuery(/^adm:receipts:list:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -594,7 +960,11 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     }
   });
 
-  admin.callbackQuery(Callbacks.adminPayments, async (ctx) => {
+  bot.callbackQuery(Callbacks.adminPayments, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "FINANCE"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery();
     await safeEdit(
       ctx,
@@ -607,7 +977,11 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     );
   });
 
-  admin.callbackQuery(/^adm:stats:(.+)$/, async (ctx) => {
+  bot.callbackQuery(/^adm:stats:(all|month|week|today)$/, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "USERS"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery();
     const timeframe = (ctx.match![1] ?? "all").toLowerCase();
 
@@ -636,7 +1010,11 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   });
 
   // ——— Tickets ———
-  admin.callbackQuery(Callbacks.adminTickets, async (ctx) => {
+  bot.callbackQuery(Callbacks.adminTickets, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "SUPPORT"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery();
     await safeEdit(
       ctx,
@@ -1208,19 +1586,154 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await ctx.conversation.enter("configurePayment");
   });
 
-  admin.callbackQuery(/^adm:approve_inv:(\d+)$/, async (ctx) => {
-    const id = Number(ctx.match![1]);
+  /**
+   * Synchronize the Admin Log Group receipt photo when processed anywhere (Bot PM or Log Group).
+   * Updates caption with approving/rejecting admin details and removes inline buttons.
+   */
+  async function syncLogGroupReceipt(
+    api: any,
+    invoiceId: number,
+    isApproved: boolean,
+    details: {
+      amountFormatted: string;
+      buyerInfo: string;
+      adminName: string;
+      adminUsername: string;
+      adminId: number | bigint;
+      timeStr: string;
+      fromPm?: boolean;
+    },
+  ): Promise<void> {
     try {
+      const logGroupId = await groupLogger.getLogGroupId();
+      if (!logGroupId) return;
+
+      const syncData = await invoiceService.getSyncData(invoiceId);
+      if (!syncData.logMessageId) return;
+
+      const title = isApproved
+        ? (details.fromPm ? "✅ <b>فاکتور تایید و شارژ شد (از پنل ربات)</b>" : "✅ <b>فاکتور تایید و شارژ شد</b>")
+        : (details.fromPm ? "❌ <b>فاکتور رد شد (از پنل ربات)</b>" : "❌ <b>فاکتور رد شد</b>");
+
+      const caption = [
+        title,
+        "",
+        `🧾 شماره فاکتور: #${invoiceId}`,
+        `💵 مبلغ: ${details.amountFormatted} تومان`,
+        `👤 خریدار: ${details.buyerInfo}`,
+        `👮‍♂️ <b>${isApproved ? "تایید شده توسط ادمین:" : "رد شده توسط ادمین:"}</b> ${details.adminName} (@${details.adminUsername})`,
+        `🆔 <b>شناسه عددی ادمین:</b> <code>${details.adminId}</code>`,
+        `🕒 زمان ${isApproved ? "تایید" : "رد"}: ${details.timeStr}`,
+      ].join("\n");
+
+      await api.editMessageCaption(logGroupId, syncData.logMessageId, {
+        caption,
+        parse_mode: "HTML",
+        reply_markup: undefined,
+      }).catch(() => {});
+    } catch (err) {
+      console.warn(`[syncLogGroupReceipt] failed for invoice #${invoiceId}:`, err);
+    }
+  }
+
+  admin.callbackQuery(/^adm:approve_inv:(\d+)$/, async (ctx) => {
+    // 1. Immediate Callback Acknowledgment to prevent timeouts
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({
+        text: "⛔ دسترسی غیرمجاز",
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+
+    const id = Number(ctx.match![1]);
+    const isPrivateChat = ctx.chat?.type === "private";
+
+    try {
+      // 2. Idempotency Check
       const pending = await invoiceService.getById(id);
       if (!pending) {
-        await ctx.answerCallbackQuery({ text: "فاکتور یافت نشد", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: "⚠️ فاکتور یافت نشد.",
+          show_alert: true,
+        }).catch(() => {});
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
         return;
       }
 
+      // Check if already processed
+      if (
+        pending.status !== InvoiceStatus.AWAITING_APPROVAL &&
+        pending.status !== InvoiceStatus.PENDING
+      ) {
+        const syncData = await invoiceService.getSyncData(pending);
+        const adminName = syncData.approvedByAdminName || "ادمین";
+        const adminIdStr = syncData.approvedByAdminId != null ? String(syncData.approvedByAdminId) : "—";
+        const statusLabel = pending.status === InvoiceStatus.PAID ? "✅ تایید شده" : "❌ رد شده";
+
+        await ctx.answerCallbackQuery({
+          text: `⚠️ این فاکتور قبلاً توسط ${adminName} تعیین وضعیت شده است.`,
+          show_alert: true,
+        }).catch(() => {});
+
+        // If clicked in log group or PM, update caption to clarify stale state and strip buttons
+        const staleCaption = [
+          "ℹ️ <b>این فاکتور قبلاً تعیین وضعیت شده است.</b>",
+          "",
+          `🧾 شماره فاکتور: #${pending.id}`,
+          `📊 وضعیت: ${statusLabel}`,
+          `👮‍♂️ توسط: ${adminName} (شناسه: <code>${adminIdStr}</code>)`,
+        ].join("\n");
+
+        try {
+          await ctx.editMessageCaption({
+            caption: staleCaption,
+            parse_mode: "HTML",
+            reply_markup: undefined,
+          });
+        } catch {
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        }
+        return;
+      }
+
+      // 3. Admin Identity & Details
+      const adminFirstName = escapeHtml(ctx.from.first_name || "ادمین");
+      const adminUsername = ctx.from.username ? escapeHtml(ctx.from.username) : "ندارد";
+      const adminId = ctx.from.id;
+      const currentTime = formatReceiptDate(new Date());
+
+      const amountNum = pending.topUpAmount ? Number(pending.topUpAmount) : Number(pending.amount);
+      const formattedAmount = Math.round(amountNum).toLocaleString("en-US");
+      const buyerTelegramId = pending.user?.telegramId ? pending.user.telegramId.toString() : String(pending.userId);
+      const buyerInfo = `کاربر #${pending.userId} (شناسه: <code>${buyerTelegramId}</code>)`;
+
+      // Save acting admin info & logMessageId (if clicked from log group)
+      await invoiceService.setApprovalAdmin(id, {
+        id: adminId,
+        name: `${ctx.from.first_name || "ادمین"} (@${ctx.from.username || "ندارد"})`,
+      });
+
+      if (!isPrivateChat && ctx.callbackQuery.message?.message_id) {
+        await invoiceService.setLogMessageId(id, ctx.callbackQuery.message.message_id);
+      }
+
+      const approvalCaption = [
+        isPrivateChat ? "✅ <b>فاکتور تایید و شارژ شد (از پنل ربات)</b>" : "✅ <b>فاکتور تایید و شارژ شد</b>",
+        "",
+        `🧾 شماره فاکتور: #${pending.id}`,
+        `💵 مبلغ: ${formattedAmount} تومان`,
+        `👤 خریدار: ${buyerInfo}`,
+        `👮‍♂️ <b>تایید شده توسط ادمین:</b> ${adminFirstName} (@${adminUsername})`,
+        `🆔 <b>شناسه عددی ادمین:</b> <code>${adminId}</code>`,
+        `🕒 زمان تایید: ${currentTime}`,
+      ].join("\n");
+
+      // 4. Process Approval
       if (pending.isWalletTopUp) {
         const invoice = await walletService.processTopUpApproval(id);
-        await ctx.answerCallbackQuery({ text: "شارژ کیف پول تایید شد ✅" });
-
         const topUpAmount = invoice.topUpAmount ?? invoice.amount;
         const tgId = invoice.user.telegramId.toString();
 
@@ -1228,28 +1741,29 @@ export function registerAdmin(bot: Bot<BotContext>): void {
           .logFinance(ctx.api, topUpAmount, "CARD")
           .catch(console.error);
 
+        // Edit current message caption and remove buttons
         try {
           await ctx.editMessageCaption({
-            caption: [
-              "✅ *شارژ کیف پول تایید شد*",
-              "",
-              `🧾 فاکتور: *#${invoice.id}*`,
-              `💵 مبلغ: *${formatToman(topUpAmount)}*`,
-              `📊 وضعیت: *PAID*`,
-            ].join("\n"),
-            parse_mode: "Markdown",
-            reply_markup: { inline_keyboard: [] },
+            caption: approvalCaption,
+            parse_mode: "HTML",
+            reply_markup: undefined,
           });
-        } catch {
-          await ctx.reply(
-            [
-              "✅ *شارژ کیف پول تایید شد*",
-              "",
-              `🧾 فاکتور: *#${invoice.id}*`,
-              `📊 وضعیت: *PAID*`,
-            ].join("\n"),
-            { parse_mode: "Markdown" },
-          );
+        } catch (editErr) {
+          console.error("Failed to editMessageCaption on top-up approval:", editErr);
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        }
+
+        // If approved from PM, synchronize the Log Group message caption immediately
+        if (isPrivateChat) {
+          await syncLogGroupReceipt(ctx.api, id, true, {
+            amountFormatted: formattedAmount,
+            buyerInfo,
+            adminName: adminFirstName,
+            adminUsername,
+            adminId,
+            timeStr: currentTime,
+            fromPm: true,
+          });
         }
 
         try {
@@ -1264,8 +1778,6 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       }
 
       const invoice = await invoiceService.approve(id);
-      await ctx.answerCallbackQuery({ text: "تایید شد ✅" });
-
       const itemLabel = invoiceService.invoiceLabel(invoice);
 
       await groupLogger
@@ -1283,31 +1795,29 @@ export function registerAdmin(bot: Bot<BotContext>): void {
         .logFinance(ctx.api, invoice.amount, paymentType)
         .catch(console.error);
 
+      // Edit current message caption and remove buttons
       try {
         await ctx.editMessageCaption({
-          caption: [
-            "✅ *فاکتور تایید شد*",
-            "",
-            `🧾 شماره: *#${invoice.id}*`,
-            `📦 مورد: *${itemLabel}*`,
-            `💵 مبلغ: *${formatToman(invoice.amount)}*`,
-            `📊 وضعیت: *PAID*`,
-            "",
-            "پرداخت تایید و محصول آماده تحویل است.",
-          ].join("\n"),
-          parse_mode: "Markdown",
-          reply_markup: { inline_keyboard: [] },
+          caption: approvalCaption,
+          parse_mode: "HTML",
+          reply_markup: undefined,
         });
-      } catch {
-        await ctx.reply(
-          [
-            "✅ *فاکتور تایید شد*",
-            "",
-            `🧾 شماره: *#${invoice.id}*`,
-            `📊 وضعیت: *PAID*`,
-          ].join("\n"),
-          { parse_mode: "Markdown" },
-        );
+      } catch (editErr) {
+        console.error("Failed to editMessageCaption on purchase approval:", editErr);
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      }
+
+      // If approved from PM, synchronize the Log Group message caption immediately
+      if (isPrivateChat) {
+        await syncLogGroupReceipt(ctx.api, id, true, {
+          amountFormatted: formattedAmount,
+          buyerInfo,
+          adminName: adminFirstName,
+          adminUsername,
+          adminId,
+          timeStr: currentTime,
+          fromPm: true,
+        });
       }
 
       try {
@@ -1317,32 +1827,180 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       }
     } catch (err) {
       console.error("approve invoice error:", err);
+      if (err instanceof InvoiceInvalidStateError) {
+        await ctx.answerCallbackQuery({
+          text: "⚠️ این فاکتور قبلاً تعیین تکلیف شده است.",
+          show_alert: true,
+        }).catch(() => {});
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        return;
+      }
       await ctx.answerCallbackQuery({
         text: "خطا در تایید — وضعیت فاکتور را چک کنید",
         show_alert: true,
-      });
+      }).catch(() => {});
     }
   });
 
   admin.callbackQuery(/^adm:reject_inv:(\d+)$/, async (ctx) => {
+    // 1. Immediate Callback Acknowledgment to prevent timeouts
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({
+        text: "⛔ دسترسی غیرمجاز",
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+
     const id = Number(ctx.match![1]);
-    ctx.session.adminRejectInvoiceId = id;
-    ctx.session.adminTargetId = id;
-    ctx.session.adminTargetType = "invoice";
-    await ctx.answerCallbackQuery({ text: "دلیل رد را بنویسید" });
+    const isPrivateChat = ctx.chat?.type === "private";
 
     try {
-      await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
-    } catch {
-      /* ignore — caption-only / already cleared */
-    }
+      // 2. Idempotency Check
+      const invoice = await invoiceService.getById(id);
+      if (!invoice) {
+        await ctx.answerCallbackQuery({
+          text: "⚠️ فاکتور یافت نشد.",
+          show_alert: true,
+        }).catch(() => {});
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        return;
+      }
 
-    try {
-      await ctx.conversation.exitAll();
-    } catch {
-      /* ignore */
+      // Check if already processed
+      if (
+        invoice.status !== InvoiceStatus.AWAITING_APPROVAL &&
+        invoice.status !== InvoiceStatus.PENDING
+      ) {
+        const syncData = await invoiceService.getSyncData(invoice);
+        const adminName = syncData.approvedByAdminName || "ادمین";
+        const adminIdStr = syncData.approvedByAdminId != null ? String(syncData.approvedByAdminId) : "—";
+        const statusLabel = invoice.status === InvoiceStatus.PAID ? "✅ تایید شده" : "❌ رد شده";
+
+        await ctx.answerCallbackQuery({
+          text: `⚠️ این فاکتور قبلاً توسط ${adminName} تعیین وضعیت شده است.`,
+          show_alert: true,
+        }).catch(() => {});
+
+        // If clicked in log group or PM, update caption to clarify stale state and strip buttons
+        const staleCaption = [
+          "ℹ️ <b>این فاکتور قبلاً تعیین وضعیت شده است.</b>",
+          "",
+          `🧾 شماره فاکتور: #${invoice.id}`,
+          `📊 وضعیت: ${statusLabel}`,
+          `👮‍♂️ توسط: ${adminName} (شناسه: <code>${adminIdStr}</code>)`,
+        ].join("\n");
+
+        try {
+          await ctx.editMessageCaption({
+            caption: staleCaption,
+            parse_mode: "HTML",
+            reply_markup: undefined,
+          });
+        } catch {
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        }
+        return;
+      }
+
+      // 3. Process Rejection
+      await invoiceService.reject(id, "رد شده توسط ادمین");
+
+      // 4. Admin Identity & Details
+      const adminFirstName = escapeHtml(ctx.from.first_name || "ادمین");
+      const adminUsername = ctx.from.username ? escapeHtml(ctx.from.username) : "ندارد";
+      const adminId = ctx.from.id;
+      const currentTime = formatReceiptDate(new Date());
+
+      const amountNum = invoice.topUpAmount ? Number(invoice.topUpAmount) : Number(invoice.amount);
+      const formattedAmount = Math.round(amountNum).toLocaleString("en-US");
+      const buyerTelegramId = invoice.user?.telegramId ? invoice.user.telegramId.toString() : String(invoice.userId);
+      const buyerInfo = `کاربر #${invoice.userId} (شناسه: <code>${buyerTelegramId}</code>)`;
+
+      // Save acting admin info & logMessageId (if clicked from log group)
+      await invoiceService.setApprovalAdmin(id, {
+        id: adminId,
+        name: `${ctx.from.first_name || "ادمین"} (@${ctx.from.username || "ندارد"})`,
+      });
+
+      if (!isPrivateChat && ctx.callbackQuery.message?.message_id) {
+        await invoiceService.setLogMessageId(id, ctx.callbackQuery.message.message_id);
+      }
+
+      const rejectionCaption = [
+        isPrivateChat ? "❌ <b>فاکتور رد شد (از پنل ربات)</b>" : "❌ <b>فاکتور رد شد</b>",
+        "",
+        `🧾 شماره فاکتور: #${invoice.id}`,
+        `💵 مبلغ: ${formattedAmount} تومان`,
+        `👤 خریدار: ${buyerInfo}`,
+        `👮‍♂️ <b>رد شده توسط ادمین:</b> ${adminFirstName} (@${adminUsername})`,
+        `🆔 <b>شناسه عددی ادمین:</b> <code>${adminId}</code>`,
+        `🕒 زمان رد: ${currentTime}`,
+      ].join("\n");
+
+      // 5. Update Caption & Remove Buttons on current message
+      try {
+        await ctx.editMessageCaption({
+          caption: rejectionCaption,
+          parse_mode: "HTML",
+          reply_markup: undefined,
+        });
+      } catch (editErr) {
+        console.error("Failed to editMessageCaption on reject:", editErr);
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      }
+
+      // If rejected from PM, synchronize the Log Group message caption immediately
+      if (isPrivateChat) {
+        await syncLogGroupReceipt(ctx.api, id, false, {
+          amountFormatted: formattedAmount,
+          buyerInfo,
+          adminName: adminFirstName,
+          adminUsername,
+          adminId,
+          timeStr: currentTime,
+          fromPm: true,
+        });
+      }
+
+      // 6. Notify Buyer
+      try {
+        const itemLabel = invoice.isWalletTopUp
+          ? "شارژ کیف پول"
+          : (invoice.product?.name ?? "سفارش");
+        await ctx.api.sendMessage(
+          invoice.user.telegramId.toString(),
+          [
+            "❌ *پرداخت شما تایید نشد و فاکتور رد شد.*",
+            "",
+            `🧾 شماره فاکتور: *#${invoice.id}*`,
+            `📦 مورد: *${itemLabel}*`,
+            `💵 مبلغ: *${formatToman(invoice.amount)}*`,
+            "",
+            "در صورت واریز وجه یا هرگونه سوال، لطفاً با پشتیبانی در ارتباط باشید.",
+          ].join("\n"),
+          { parse_mode: "Markdown" },
+        );
+      } catch (err) {
+        console.error("Failed to notify buyer of rejection:", err);
+      }
+    } catch (err) {
+      console.error("reject invoice error:", err);
+      if (err instanceof InvoiceInvalidStateError) {
+        await ctx.answerCallbackQuery({
+          text: "⚠️ این فاکتور قبلاً تعیین تکلیف شده است.",
+          show_alert: true,
+        }).catch(() => {});
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({
+        text: "خطا در رد فاکتور — وضعیت فاکتور را چک کنید",
+        show_alert: true,
+      }).catch(() => {});
     }
-    await ctx.conversation.enter("rejectInvoice");
   });
 
   admin.callbackQuery(/^adm:tkt:re:(\d+)$/, async (ctx) => {

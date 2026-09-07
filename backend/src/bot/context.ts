@@ -24,11 +24,16 @@ export interface SessionData {
   adminCmsPageKey?: string;
   /** CMS shop: category/product targets for Fluid conversations */
   adminCmsCategoryId?: number;
+  adminCmsSubCategoryId?: number;
   adminCmsProductId?: number;
+  adminCmsAction?: "banner" | "desc" | "all";
   /** Last CMS panel message (for Fluid remount text↔media) */
   cmsPanelChatId?: number;
   cmsPanelMessageId?: number;
-}
+  adminReplyTicketId?: number;
+  discountInvoiceId?: number;
+  pendingInvoiceId?: number;
+};
 
 /** Explicit defaults for `session({ initial })` — keeps keys defined. */
 export function createInitialSession(): SessionData {
@@ -46,9 +51,14 @@ export function createInitialSession(): SessionData {
     adminUsersListPage: undefined,
     adminCmsPageKey: undefined,
     adminCmsCategoryId: undefined,
+    adminCmsSubCategoryId: undefined,
     adminCmsProductId: undefined,
+    adminCmsAction: undefined,
     cmsPanelChatId: undefined,
     cmsPanelMessageId: undefined,
+    adminReplyTicketId: undefined,
+    discountInvoiceId: undefined,
+    pendingInvoiceId: undefined,
   };
 }
 

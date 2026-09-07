@@ -10,6 +10,7 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { prisma } from "../../lib/prisma";
 import { INVOICE_TTL_MS } from "../../config/env";
 import { formatToman } from "../../lib/money";
+import { exchangeRateService, convertUsdToToman } from "../exchangeRateService";
 
 export const OPEN_INVOICE_STATUSES: InvoiceStatus[] = [
   InvoiceStatus.PENDING,
@@ -41,12 +42,18 @@ export class InvoiceInvalidStateError extends Error {
   }
 }
 
-/** @deprecated use InvoiceInvalidStateError */
-export class InvoiceNotPendingError extends InvoiceInvalidStateError {
-  constructor(invoice: Invoice) {
-    super(invoice, "PENDING-like open status");
-    this.name = "InvoiceNotPendingError";
-  }
+/**
+ * Polite notice sent when a USD-based service invoice price is dynamically updated.
+ */
+export function buildPriceUpdateNotice(oldPrice: number, newPrice: number): string {
+  return [
+    "🔄 بروزرسانی مبلغ فاکتور",
+    "",
+    "کاربر گرامی، با توجه به اینکه این سرویس با نرخ پایه دلاری محاسبه میشود و از زمان صدور فاکتور قبلی نرخ ارز تغییر کرده است، مبلغ سفارش شما مجدداً محاسبه و بهروزرسانی شد.",
+    "",
+    `▫️ مبلغ قبلی: ${oldPrice.toLocaleString("en-US")} تومان`,
+    `▫️ مبلغ جدید: ${newPrice.toLocaleString("en-US")} تومان`,
+  ].join("\n");
 }
 
 export type InvoiceWithProduct = Invoice & { product: Product | null };
@@ -135,10 +142,17 @@ export class InvoiceService {
     }
 
     const expiresAt = new Date(Date.now() + INVOICE_TTL_MS);
-    const amount =
-      typeof product.price === "object" && product.price !== null
-        ? product.price
-        : new Decimal(String(product.price));
+    let amount: Decimal;
+    if (product.currency === "USD" && product.usdPrice != null && product.usdPrice > 0) {
+      const rate = await exchangeRateService.getUsdRate();
+      const tomanPrice = convertUsdToToman(product.usdPrice, rate);
+      amount = new Decimal(tomanPrice);
+    } else {
+      amount =
+        typeof product.price === "object" && product.price !== null
+          ? product.price
+          : new Decimal(String(product.price));
+    }
 
     return prisma.invoice.create({
       data: {
@@ -153,6 +167,63 @@ export class InvoiceService {
           : Prisma.JsonNull,
       },
     });
+  }
+
+  /**
+   * For pending invoices linked to a USD product, recalculates the Toman amount
+   * against the latest exchange rate. If the price changed, updates the DB record.
+   * Returns priceChanged flag and old/new prices.
+   */
+  async refreshInvoicePriceIfUsd(invoiceId: number): Promise<{
+    invoice: InvoiceWithUserProduct;
+    priceChanged: boolean;
+    oldPrice: number;
+    newPrice: number;
+  } | null> {
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { product: true, user: true },
+    });
+    if (!invoice || invoice.status !== InvoiceStatus.PENDING || !invoice.product) {
+      return invoice
+        ? {
+            invoice,
+            priceChanged: false,
+            oldPrice: Math.round(Number(invoice.amount)),
+            newPrice: Math.round(Number(invoice.amount)),
+          }
+        : null;
+    }
+
+    const product = invoice.product;
+    if (product.currency === "USD" && product.usdPrice != null && product.usdPrice > 0) {
+      const rate = await exchangeRateService.getUsdRate();
+      const newPrice = convertUsdToToman(product.usdPrice, rate);
+      const oldPrice = Math.round(Number(invoice.amount));
+
+      if (newPrice !== oldPrice && newPrice > 0) {
+        const updated = await prisma.invoice.update({
+          where: { id: invoice.id },
+          data: {
+            amount: new Decimal(newPrice),
+          },
+          include: { product: true, user: true },
+        });
+        return {
+          invoice: updated,
+          priceChanged: true,
+          oldPrice,
+          newPrice,
+        };
+      }
+    }
+
+    return {
+      invoice,
+      priceChanged: false,
+      oldPrice: Math.round(Number(invoice.amount)),
+      newPrice: Math.round(Number(invoice.amount)),
+    };
   }
 
   async createWalletTopUpInvoice(userId: number, topUpAmount: Decimal | number | string): Promise<Invoice> {
@@ -365,6 +436,82 @@ export class InvoiceService {
       take,
     });
   }
+
+  async getSyncData(
+    invoiceOrId: Invoice | number | null | undefined,
+  ): Promise<InvoiceSyncData> {
+    if (!invoiceOrId) {
+      return { logMessageId: null, approvedByAdminId: null, approvedByAdminName: null };
+    }
+
+    let invoice: any = invoiceOrId;
+    if (typeof invoiceOrId === "number") {
+      invoice = await prisma.invoice.findUnique({ where: { id: invoiceOrId } });
+      if (!invoice) {
+        return { logMessageId: null, approvedByAdminId: null, approvedByAdminName: null };
+      }
+    }
+
+    const anyInv = invoice as any;
+    const inputData = anyInv.userInputData && typeof anyInv.userInputData === "object" ? anyInv.userInputData : {};
+
+    const logMessageId = anyInv.logMessageId != null 
+      ? Number(anyInv.logMessageId) 
+      : (inputData.logMessageId != null ? Number(inputData.logMessageId) : null);
+
+    const approvedByAdminId = anyInv.approvedByAdminId != null 
+      ? anyInv.approvedByAdminId 
+      : (inputData.approvedByAdminId != null ? inputData.approvedByAdminId : null);
+
+    const approvedByAdminName = anyInv.approvedByAdminName != null 
+      ? String(anyInv.approvedByAdminName) 
+      : (inputData.approvedByAdminName != null ? String(inputData.approvedByAdminName) : null);
+
+    return { logMessageId, approvedByAdminId, approvedByAdminName };
+  }
+
+  async setLogMessageId(invoiceId: number, messageId: number): Promise<void> {
+    try {
+      const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      const currentInput = (inv?.userInputData && typeof inv.userInputData === "object") ? (inv.userInputData as Record<string, any>) : {};
+      await (prisma.invoice as any).update({
+        where: { id: invoiceId },
+        data: {
+          logMessageId: messageId,
+          userInputData: { ...currentInput, logMessageId: messageId },
+        },
+      });
+    } catch (err) {
+      console.warn(`[InvoiceService] setLogMessageId for invoice #${invoiceId} failed:`, err);
+    }
+  }
+
+  async setApprovalAdmin(invoiceId: number, admin: { id: number | bigint; name: string }): Promise<void> {
+    try {
+      const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      const currentInput = (inv?.userInputData && typeof inv.userInputData === "object") ? (inv.userInputData as Record<string, any>) : {};
+      await (prisma.invoice as any).update({
+        where: { id: invoiceId },
+        data: {
+          approvedByAdminId: BigInt(admin.id),
+          approvedByAdminName: admin.name,
+          userInputData: {
+            ...currentInput,
+            approvedByAdminId: admin.id.toString(),
+            approvedByAdminName: admin.name,
+          },
+        },
+      });
+    } catch (err) {
+      console.warn(`[InvoiceService] setApprovalAdmin for invoice #${invoiceId} failed:`, err);
+    }
+  }
 }
+
+export type InvoiceSyncData = {
+  logMessageId: number | null;
+  approvedByAdminId: bigint | string | null;
+  approvedByAdminName: string | null;
+};
 
 export const invoiceService = new InvoiceService();

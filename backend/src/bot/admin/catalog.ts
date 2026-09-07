@@ -15,9 +15,19 @@ import {
   waitTextOnPanel,
   type PanelRef,
 } from "../conversations/wait";
+import { InlineKeyboard } from "grammy";
+import { exchangeRateService, convertUsdToToman } from "../../services/exchangeRateService";
 import {
   adminCatalogKeyboard,
+  adminSubCategoriesKeyboard,
   adminProductPickKeyboard,
+  convCategoryPickKeyboard,
+  convProductPickCategoryKeyboard,
+  convProductPickCategoryContentsKeyboard,
+  convProductPickSubCategoryPlansKeyboard,
+  convProductPickKeyboard,
+  convSubCategoryPickKeyboard,
+  convSubCategoryEditKeyboard,
   convDeliveryTypeEditKeyboard,
   convProductDurationKeyboard,
   convProductEditKeyboard,
@@ -495,42 +505,196 @@ export async function editProductConversation(
     let panel: PanelRef | null = panelFromCtx(ctx);
 
     if (!productId) {
-      const products = await conversation.external(async () =>
-        toPlain(await catalogService.listActiveProducts()),
-      );
-      if (products.length === 0) {
-        await ensurePanel(
-          ctx,
-          ["ℹ️ *ویرایش محصول*", "", "محصول فعالی نیست."].join("\n"),
-          adminCatalogKeyboard(),
-          panel,
-        );
-        return;
+      let currentTier: "categories" | "category" | "subcategory" = "categories";
+      let selectedCategoryId: number | null = null;
+      let selectedCategoryName = "";
+      let selectedSubCategoryId: number | null = null;
+      let selectedSubCategoryName = "";
+
+      while (!productId) {
+        if (currentTier === "categories") {
+          const categories = await conversation.external(async () =>
+            toPlain(await catalogService.listActiveCategories()),
+          );
+          if (categories.length === 0) {
+            await ensurePanel(
+              ctx,
+              ["ℹ️ *ویرایش محصول*", "", "دسته‌بندی فعالی وجود ندارد."].join("\n"),
+              adminCatalogKeyboard(),
+              panel,
+            );
+            return;
+          }
+
+          const pick = await waitCallbackOnPanel(
+            conversation,
+            ctx,
+            [
+              "✏️ *ویرایش محصول (مرحله ۱)*",
+              "",
+              "📁 لطفاً دسته‌بندی مورد نظر را انتخاب کنید:",
+            ].join("\n"),
+            convProductPickCategoryKeyboard(categories),
+            panel,
+          );
+          panel = pick.panel;
+          if (!pick.data || pick.data === ConvCb.cancel) {
+            await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
+            return;
+          }
+
+          const catMatch = /^(?:conv:pick:cat|conv:cat):(\d+)$/.exec(pick.data);
+          if (catMatch) {
+            selectedCategoryId = Number(catMatch[1]);
+            const cat = categories.find((c) => c.id === selectedCategoryId);
+            selectedCategoryName = cat?.name ?? "دسته‌بندی";
+            currentTier = "category";
+            continue;
+          }
+
+          await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminCatalogKeyboard(), panel);
+          return;
+        }
+
+        if (currentTier === "category") {
+          const categoryData = await conversation.external(async () => {
+            const [subCats, prods] = await Promise.all([
+              catalogService.listSubCategoriesByCategory(selectedCategoryId!, true),
+              catalogService.listActiveProductsByCategory(selectedCategoryId!),
+            ]);
+            return {
+              subCategories: toPlain(subCats),
+              standaloneProducts: toPlain(prods.filter((p: any) => p.subCategoryId == null)),
+            };
+          });
+
+          const { subCategories, standaloneProducts } = categoryData;
+
+          if (subCategories.length === 0 && standaloneProducts.length === 0) {
+            const pick = await waitCallbackOnPanel(
+              conversation,
+              ctx,
+              [
+                "✏️ *ویرایش محصول*",
+                "",
+                `📁 دسته‌بندی: *${selectedCategoryName}*`,
+                "",
+                "هیچ محصول یا سرویس فعالی در این دسته‌بندی وجود ندارد.",
+              ].join("\n"),
+              new InlineKeyboard().text("🔙 بازگشت به دسته‌بندی‌ها", ConvCb.pickBackCats),
+              panel,
+            );
+            panel = pick.panel;
+            currentTier = "categories";
+            continue;
+          }
+
+          const pick = await waitCallbackOnPanel(
+            conversation,
+            ctx,
+            [
+              "✏️ *ویرایش محصول (مرحله ۲)*",
+              "",
+              `📁 دسته‌بندی: *${selectedCategoryName}*`,
+              "",
+              "سرویس یا محصول مورد نظر را انتخاب کنید:",
+            ].join("\n"),
+            convProductPickCategoryContentsKeyboard(subCategories, standaloneProducts),
+            panel,
+          );
+          panel = pick.panel;
+          if (!pick.data || pick.data === ConvCb.cancel) {
+            await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
+            return;
+          }
+
+          if (pick.data === ConvCb.pickBackCats) {
+            currentTier = "categories";
+            continue;
+          }
+
+          const subCatMatch = /^conv:pick:subcat:(\d+)$/.exec(pick.data);
+          if (subCatMatch) {
+            selectedSubCategoryId = Number(subCatMatch[1]);
+            const sub = subCategories.find((s) => s.id === selectedSubCategoryId);
+            selectedSubCategoryName = sub?.name ?? "سرویس";
+            currentTier = "subcategory";
+            continue;
+          }
+
+          const prodMatch = /^(?:conv:pick:prod|adm:prd:edit):(\d+)$/.exec(pick.data);
+          if (prodMatch) {
+            productId = Number(prodMatch[1]);
+            break;
+          }
+
+          await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminCatalogKeyboard(), panel);
+          return;
+        }
+
+        if (currentTier === "subcategory") {
+          const plans = await conversation.external(async () =>
+            toPlain(await catalogService.listActiveProductsBySubCategory(selectedSubCategoryId!)),
+          );
+
+          if (plans.length === 0) {
+            const pick = await waitCallbackOnPanel(
+              conversation,
+              ctx,
+              [
+                "✏️ *ویرایش محصول*",
+                "",
+                `📑 سرویس: *${selectedSubCategoryName}*`,
+                "",
+                "هیچ پلن فعالی برای این سرویس وجود ندارد.",
+              ].join("\n"),
+              new InlineKeyboard().text(
+                `🔙 بازگشت به ${selectedCategoryName}`,
+                ConvCb.pickBackCat,
+              ),
+              panel,
+            );
+            panel = pick.panel;
+            currentTier = "category";
+            continue;
+          }
+
+          const pick = await waitCallbackOnPanel(
+            conversation,
+            ctx,
+            [
+              "✏️ *ویرایش محصول (مرحله ۳: پلن‌ها)*",
+              "",
+              `📑 سرویس: *${selectedSubCategoryName}*`,
+              `📁 دسته‌بندی: *${selectedCategoryName}*`,
+              "",
+              "پلن مورد نظر را جهت ویرایش انتخاب کنید:",
+            ].join("\n"),
+            convProductPickSubCategoryPlansKeyboard(plans, selectedCategoryName),
+            panel,
+          );
+          panel = pick.panel;
+          if (!pick.data || pick.data === ConvCb.cancel) {
+            await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
+            return;
+          }
+
+          if (pick.data === ConvCb.pickBackCat) {
+            currentTier = "category";
+            continue;
+          }
+
+          const prodMatch = /^(?:conv:pick:prod|adm:prd:edit):(\d+)$/.exec(pick.data);
+          if (prodMatch) {
+            productId = Number(prodMatch[1]);
+            break;
+          }
+
+          await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminCatalogKeyboard(), panel);
+          return;
+        }
       }
 
-      const pick = await waitCallbackOnPanel(
-        conversation,
-        ctx,
-        [
-          "✏️ *ویرایش محصول*",
-          "",
-          "محصول مورد نظر را انتخاب کنید:",
-        ].join("\n"),
-        adminProductPickKeyboard(products, "edit"),
-        panel,
-      );
-      panel = pick.panel;
-      if (!pick.data) {
-        await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
-        return;
-      }
-
-      const pickMatch = /^adm:prd:edit:(\d+)$/.exec(pick.data);
-      if (!pickMatch) {
-        await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminCatalogKeyboard(), panel);
-        return;
-      }
-      productId = Number(pickMatch[1]);
       await conversation.external((c) => {
         c.session.adminTargetId = productId!;
         c.session.adminTargetType = "product";
@@ -540,18 +704,23 @@ export async function editProductConversation(
     while (true) {
       // Lean select + toPlain — Prisma Decimal/BigInt cannot cross conversation.external()
       const product = await conversation.external(async () => {
-        const row = await prisma.product.findFirst({
+        const row: any = await (prisma.product.findFirst as any)({
           where: { id: productId!, isActive: true },
           select: {
             id: true,
             name: true,
             price: true,
+            currency: true,
+            usdPrice: true,
             description: true,
             deliveryType: true,
             durationDays: true,
             lowStockThreshold: true,
             credentialReq: true,
             bannerFileId: true,
+            categoryId: true,
+            subCategoryId: true,
+            subCategory: { select: { id: true, name: true } },
           },
         });
         return row ? toPlain(row) : null;
@@ -577,6 +746,16 @@ export async function editProductConversation(
           ? `⏱ مدت اشتراک: *${product.durationDays}* روز`
           : "⏱ مدت اشتراک: *تنظیم نشده*";
 
+      const subCatLine = (product as any).subCategory?.name
+        ? `📑 سرویس: *${(product as any).subCategory.name}*`
+        : "📑 سرویس: *تنظیم نشده (بدون سرویس)*";
+
+      const prod = product as typeof product & { currency?: string; usdPrice?: number | null };
+      const priceLine =
+        prod.currency === "USD" && prod.usdPrice != null
+          ? `💵 قیمت: *${formatToman(product.price)}* ($${prod.usdPrice})`
+          : `💵 قیمت: *${formatToman(product.price)}*`;
+
       const menu = await waitCallbackOnPanel(
         conversation,
         ctx,
@@ -584,7 +763,8 @@ export async function editProductConversation(
           "✏️ *ویرایش محصول*",
           "",
           `📦 محصول: *${product.name}*`,
-          `💵 قیمت: *${formatToman(product.price)}*`,
+          subCatLine,
+          priceLine,
           `🚚 نوع تحویل: *${deliveryTypeLabel(product.deliveryType)}*`,
           durationLine,
           `⚠️ آستانه موجودی: *${product.lowStockThreshold}*`,
@@ -607,6 +787,55 @@ export async function editProductConversation(
           panel,
         );
         return;
+      }
+
+      // Handle Edit Product SubCategory
+      if (action === ConvCb.editProductSubCategory) {
+        const subCategories = await conversation.external(async () =>
+          toPlain(await catalogService.listSubCategoriesByCategory((product as any).categoryId, true)),
+        );
+
+        const pickSub = await waitCallbackOnPanel(
+          conversation,
+          ctx,
+          [
+            "📑 *تغییر سرویس / زیردسته محصول*",
+            "",
+            `📦 محصول: *${product.name}*`,
+            subCatLine,
+            "",
+            "سرویس جدید را انتخاب کنید (یا «بدون سرویس»):",
+          ].join("\n"),
+          convSubCategoryPickKeyboard(subCategories, {
+            allowSkip: true,
+            cancelCb: ConvCb.cancel,
+          }),
+          panel,
+        );
+        panel = pickSub.panel;
+        if (!pickSub.data || pickSub.data === ConvCb.cancel) {
+          continue;
+        }
+
+        let newSubCatId: number | null = null;
+        if (pickSub.data === "conv:subcat:none") {
+          newSubCatId = null;
+        } else {
+          const m = /^conv:subcat:(\d+)$/.exec(pickSub.data);
+          if (m) newSubCatId = Number(m[1]);
+        }
+
+        await conversation.external(async () => {
+          await catalogService.updateProductSubCategory(productId!, newSubCatId);
+        });
+
+        await ensurePanel(
+          ctx,
+          "✅ سرویس محصول بروزرسانی شد.",
+          emptyKeyboard,
+          panel,
+        );
+        continue;
       }
 
       // Nested edit actions — handled inside this conversation (not adm:* handlers)
@@ -737,44 +966,135 @@ export async function editProductConversation(
       }
 
       if (action === ConvCb.editProductPrice) {
-        let price: number | null = null;
-        let pricePrompt = [
-          "💰 *ویرایش قیمت*",
+        const prod = product as typeof product & { currency?: string; usdPrice?: number | null };
+        const currentPriceDisplay =
+          prod.currency === "USD" && prod.usdPrice != null
+            ? `$${prod.usdPrice} (${formatToman(product.price)})`
+            : formatToman(product.price);
+
+        const currPrompt = [
+          "💰 *ویرایش قیمت محصول*",
           "",
-          `قیمت فعلی: *${formatToman(product.price)}*`,
+          `محصول: *${product.name}*`,
+          `قیمت فعلی: *${currentPriceDisplay}*`,
           "",
-          "قیمت جدید (تومان) را بفرستید:",
+          "واحد پول قیمت گذاری را انتخاب کنید:",
         ].join("\n");
-        for (let attempt = 0; attempt < 5 && price === null; attempt++) {
-          const priceWait = await waitTextOnPanel(
-            conversation,
-            ctx,
-            pricePrompt,
-            panel,
-          );
-          panel = priceWait.panel;
-          if (!priceWait.text) break;
-          price = parsePrice(priceWait.text);
-          if (price === null) {
-            pricePrompt = [
-              "⚠️ *عدد نامعتبر*",
-              "",
-              "دوباره قیمت تومان را بفرستید:",
-            ].join("\n");
-          }
+
+        const currWait = await waitCallbackOnPanel(
+          conversation,
+          ctx,
+          currPrompt,
+          new InlineKeyboard()
+            .text("💵 قیمت دلاری (USD)", "conv:prd:edit:curr:USD")
+            .text("🇮🇷 قیمت تومانی (TOMAN)", "conv:prd:edit:curr:TOMAN")
+            .row()
+            .text("❌ لغو", ConvCb.cancel),
+          panel,
+        );
+        panel = currWait.panel;
+        if (!currWait.data || currWait.data === ConvCb.cancel) {
+          continue;
         }
-        if (price !== null) {
-          await conversation.external(async () => {
-            await catalogService.updateProductPrice(productId!, price!);
-          });
-          await ensurePanel(
-            ctx,
-            ["✅ *قیمت به روز شد*", "", `💵 قیمت جدید: *${formatToman(price)}*`].join(
-              "\n",
-            ),
-            emptyKeyboard,
-            panel,
-          );
+
+        if (currWait.data === "conv:prd:edit:curr:USD") {
+          let usdPrice: number | null = null;
+          let usdPrompt = [
+            "💰 *ویرایش قیمت محصول (دلاری)*",
+            "",
+            `محصول: *${product.name}*`,
+            "",
+            "قیمت جدید به دلار (USD) را بفرستید (مثلاً 5 یا 9.99):",
+            "",
+            "(برای انصراف /cancel را بفرستید)",
+          ].join("\n");
+
+          for (let attempt = 0; attempt < 5 && usdPrice === null; attempt++) {
+            const usdWait = await waitTextOnPanel(
+              conversation,
+              ctx,
+              usdPrompt,
+              panel,
+            );
+            panel = usdWait.panel;
+            if (!usdWait.text) break;
+            const parsed = parseFloat(usdWait.text.trim().replace(/,/g, "."));
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+              usdPrompt = [
+                "⚠️ *قیمت نامعتبر*",
+                "",
+                "لطفاً یک عدد معتبر به دلار وارد کنید (مثلاً 5 یا 9.99):",
+              ].join("\n");
+            } else {
+              usdPrice = Math.round(parsed * 100) / 100;
+            }
+          }
+
+          if (usdPrice !== null) {
+            const price = await conversation.external(async () => {
+              const rate = await exchangeRateService.getUsdRate();
+              return convertUsdToToman(usdPrice!, rate);
+            });
+            await conversation.external(async () => {
+              await catalogService.updateProductPrice(productId!, price, "USD", usdPrice);
+            });
+            await ensurePanel(
+              ctx,
+              [
+                "✅ *قیمت محصول به روز شد*",
+                "",
+                `💵 قیمت جدید: *$${usdPrice}* (معادل فعلی: *${formatToman(price)}*)`,
+              ].join("\n"),
+              emptyKeyboard,
+              panel,
+            );
+          }
+        } else {
+          let price: number | null = null;
+          let pricePrompt = [
+            "💰 *ویرایش قیمت محصول (تومانی)*",
+            "",
+            `محصول: *${product.name}*`,
+            "",
+            "قیمت جدید به تومان را بفرستید (فقط عدد):",
+            "",
+            "(برای انصراف /cancel را بفرستید)",
+          ].join("\n");
+
+          for (let attempt = 0; attempt < 5 && price === null; attempt++) {
+            const priceWait = await waitTextOnPanel(
+              conversation,
+              ctx,
+              pricePrompt,
+              panel,
+            );
+            panel = priceWait.panel;
+            if (!priceWait.text) break;
+            price = parsePrice(priceWait.text);
+            if (price === null || price <= 0) {
+              pricePrompt = [
+                "⚠️ *عدد نامعتبر*",
+                "",
+                "دوباره قیمت تومان را بفرستید (فقط عدد):",
+              ].join("\n");
+            }
+          }
+
+          if (price !== null && price > 0) {
+            await conversation.external(async () => {
+              await catalogService.updateProductPrice(productId!, price!, "TOMAN", null);
+            });
+            await ensurePanel(
+              ctx,
+              [
+                "✅ *قیمت محصول به روز شد*",
+                "",
+                `💵 قیمت جدید: *${formatToman(price)}*`,
+              ].join("\n"),
+              emptyKeyboard,
+              panel,
+            );
+          }
         }
         continue;
       }
@@ -840,5 +1160,200 @@ export async function editProductConversation(
       ["⚠️ *خطا در ویرایش محصول*", "", "لطفا دوباره تلاش کنید."].join("\n"),
       { parse_mode: "Markdown", reply_markup: adminCatalogKeyboard() },
     );
+  }
+}
+
+export async function editSubCategoryConversation(
+  conversation: EshtrakinoConversation,
+  ctx: SessionContext,
+): Promise<void> {
+  try {
+    let panel: PanelRef | null = panelFromCtx(ctx);
+
+    const categories = await conversation.external(async () =>
+      toPlain(await catalogService.listActiveCategories()),
+    );
+    if (categories.length === 0) {
+      await ensurePanel(
+        ctx,
+        "⚠️ دسته‌ای برای انتخاب وجود ندارد.",
+        adminSubCategoriesKeyboard(),
+        panel,
+      );
+      return;
+    }
+
+    const catPick = await waitCallbackOnPanel(
+      conversation,
+      ctx,
+      [
+        "📑 *ویرایش سرویس — مرحله ۱*",
+        "",
+        "ابتدا دسته والد سرویس را انتخاب کنید:",
+      ].join("\n"),
+      convCategoryPickKeyboard(categories),
+      panel,
+    );
+    panel = catPick.panel;
+    if (!catPick.data || catPick.data === ConvCb.cancel) {
+      await ensurePanel(ctx, "عملیات لغو شد.", adminSubCategoriesKeyboard(), panel);
+      return;
+    }
+
+    const catMatch = /^conv:cat:(\d+)$/.exec(catPick.data);
+    if (!catMatch) {
+      await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminSubCategoriesKeyboard(), panel);
+      return;
+    }
+    const categoryId = Number(catMatch[1]);
+    const category = categories.find((c) => c.id === categoryId);
+    if (!category) {
+      await ensurePanel(ctx, "دسته یافت نشد.", adminSubCategoriesKeyboard(), panel);
+      return;
+    }
+
+    const subCategories = await conversation.external(async () =>
+      toPlain(await catalogService.listSubCategoriesByCategory(categoryId, true)),
+    );
+    if (subCategories.length === 0) {
+      await ensurePanel(
+        ctx,
+        `ℹ️ هیچ سرویسی برای دسته *${category.name}* ثبت نشده است.`,
+        adminSubCategoriesKeyboard(),
+        panel,
+      );
+      return;
+    }
+
+    const subPick = await waitCallbackOnPanel(
+      conversation,
+      ctx,
+      [
+        "📑 *ویرایش سرویس — مرحله ۲*",
+        "",
+        `دسته: *${category.name}*`,
+        "",
+        "سرویس مورد نظر برای ویرایش یا حذف را انتخاب کنید:",
+      ].join("\n"),
+      convSubCategoryPickKeyboard(subCategories, { allowSkip: false }),
+      panel,
+    );
+    panel = subPick.panel;
+    if (!subPick.data || subPick.data === ConvCb.cancel) {
+      await ensurePanel(ctx, "عملیات لغو شد.", adminSubCategoriesKeyboard(), panel);
+      return;
+    }
+
+    const subMatch = /^conv:subcat:(\d+)$/.exec(subPick.data);
+    if (!subMatch) {
+      await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminSubCategoriesKeyboard(), panel);
+      return;
+    }
+    const subCategoryId = Number(subMatch[1]);
+
+    while (true) {
+      const subCategory = await conversation.external(async () =>
+        toPlain(await catalogService.getSubCategoryById(subCategoryId)),
+      );
+      if (!subCategory || !subCategory.isActive) {
+        await ensurePanel(ctx, "سرویس یافت نشد یا حذف شده است.", adminSubCategoriesKeyboard(), panel);
+        return;
+      }
+
+      const productsCount = await conversation.external(async () => {
+        const prods = await catalogService.listActiveProductsBySubCategory(subCategoryId);
+        return prods.length;
+      });
+
+      const menu = await waitCallbackOnPanel(
+        conversation,
+        ctx,
+        [
+          "✏️ *مدیریت سرویس*",
+          "",
+          `📑 نام سرویس: *${subCategory.name}*`,
+          `🗂 دسته والد: *${category.name}*`,
+          `📦 تعداد پلن‌ها/محصولات فعال: *${productsCount}*`,
+          `🔖 توضیحات: ${subCategory.description || "ثبت نشده"}`,
+          "",
+          "کدام بخش را می‌خواهید ویرایش کنید؟",
+        ].join("\n"),
+        convSubCategoryEditKeyboard(),
+        panel,
+      );
+      panel = menu.panel;
+      const action = menu.data;
+
+      if (!action || action === ConvCb.cancel) {
+        await ensurePanel(ctx, "عملیات لغو شد.", adminSubCategoriesKeyboard(), panel);
+        return;
+      }
+
+      if (action === ConvCb.editSubCategoryName) {
+        const newName = await waitText(
+          conversation,
+          ctx,
+          [
+            "📝 *ویرایش نام سرویس*",
+            "",
+            `نام فعلی: *${subCategory.name}*`,
+            "",
+            "نام جدید را ارسال کنید:",
+          ].join("\n"),
+        );
+        if (newName) {
+          await conversation.external(async () => {
+            await catalogService.updateSubCategory(subCategoryId, { name: newName });
+          });
+          await ensurePanel(ctx, "✅ نام سرویس بروزرسانی شد.", emptyKeyboard, panel);
+        }
+        continue;
+      }
+
+      if (action === ConvCb.editSubCategoryDesc) {
+        const newDesc = await waitText(
+          conversation,
+          ctx,
+          [
+            "🔖 *ویرایش توضیحات سرویس*",
+            "",
+            `توضیحات فعلی: ${subCategory.description || "ثبت نشده"}`,
+            "",
+            "توضیحات جدید را ارسال کنید (یا برای حذف `-` بفرستید):",
+          ].join("\n"),
+        );
+        if (newDesc !== null) {
+          const descVal = newDesc.trim() === "-" ? null : newDesc.trim();
+          await conversation.external(async () => {
+            await catalogService.updateSubCategory(subCategoryId, { description: descVal });
+          });
+          await ensurePanel(ctx, "✅ توضیحات سرویس بروزرسانی شد.", emptyKeyboard, panel);
+        }
+        continue;
+      }
+
+      if (action === ConvCb.deleteSubCategory) {
+        await conversation.external(async () => {
+          await catalogService.deleteSubCategory(subCategoryId);
+        });
+        await ensurePanel(
+          ctx,
+          [
+            "✅ *سرویس با موفقیت حذف شد*",
+            "",
+            `نام سرویس: *${subCategory.name}*`,
+            "(محصولات وابسته به این سرویس همچنان در دسته اصلی باقی می‌مانند)",
+          ].join("\n"),
+          adminSubCategoriesKeyboard(),
+          panel,
+        );
+        return;
+      }
+    }
+  } catch (err) {
+    console.error("editSubCategoryConversation error:", err);
+    await ctx.reply("⚠️ خطا در ویرایش سرویس.", {
+      reply_markup: adminSubCategoriesKeyboard(),
+    });
   }
 }

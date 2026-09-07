@@ -7,6 +7,7 @@ import {
   type PanelRef,
   waitTextOnPanel,
 } from "../conversations/wait";
+import { safeDeleteMessage } from "../utils/safeEdit";
 import { ConvCb } from "./keyboards";
 import {
   adminUserProfileKeyboard,
@@ -102,11 +103,7 @@ async function deleteAdminInput(ctx: SessionContext): Promise<void> {
   const chatId = ctx.chat?.id;
   const messageId = ctx.message?.message_id;
   if (chatId == null || messageId == null) return;
-  try {
-    await ctx.api.deleteMessage(chatId, messageId);
-  } catch (err) {
-    console.error("Could not delete admin search input:", err);
-  }
+  await safeDeleteMessage(ctx.api, chatId, messageId);
 }
 
 function isSearchCancelCallback(data: string): boolean {

@@ -67,4 +67,10 @@ export function registerUserHandlers(bot: Bot<BotContext>): void {
 
     await ctx.conversation.enter("collectCredentials");
   });
+
+  bot.callbackQuery(/^user:tkt:reply:(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
+    await ctx.conversation.enter("support");
+  });
 }

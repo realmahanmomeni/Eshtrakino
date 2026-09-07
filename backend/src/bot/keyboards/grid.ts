@@ -1,6 +1,10 @@
 import { InlineKeyboard } from "grammy";
 
-export type KeyboardButton = { text: string; data: string };
+export type KeyboardButton = {
+  text: string;
+  data: string;
+  icon_custom_emoji_id?: string;
+};
 
 /**
  * Keyboard layout contract:
@@ -17,7 +21,11 @@ export function appendOneColumn(
   buttons: Array<KeyboardButton>,
 ): InlineKeyboard {
   for (const btn of buttons) {
-    kb.text(btn.text, btn.data).row();
+    if (btn.icon_custom_emoji_id) {
+      kb.text({ text: btn.text, icon_custom_emoji_id: btn.icon_custom_emoji_id }, btn.data).row();
+    } else {
+      kb.text(btn.text, btn.data).row();
+    }
   }
   return kb;
 }
@@ -30,10 +38,19 @@ export function appendTwoColumn(
   for (let i = 0; i < buttons.length; i += 2) {
     const left = buttons[i]!;
     const right = buttons[i + 1];
-    if (right) {
-      kb.text(left.text, left.data).text(right.text, right.data).row();
+    if (left.icon_custom_emoji_id) {
+      kb.text({ text: left.text, icon_custom_emoji_id: left.icon_custom_emoji_id }, left.data);
     } else {
-      kb.text(left.text, left.data).row();
+      kb.text(left.text, left.data);
+    }
+    if (right) {
+      if (right.icon_custom_emoji_id) {
+        kb.text({ text: right.text, icon_custom_emoji_id: right.icon_custom_emoji_id }, right.data).row();
+      } else {
+        kb.text(right.text, right.data).row();
+      }
+    } else {
+      kb.row();
     }
   }
   return kb;
@@ -44,8 +61,13 @@ export function appendFullWidthCta(
   kb: InlineKeyboard,
   text: string,
   data: string,
+  icon_custom_emoji_id?: string,
 ): InlineKeyboard {
-  kb.text(text, data).row();
+  if (icon_custom_emoji_id) {
+    kb.text({ text, icon_custom_emoji_id }, data).row();
+  } else {
+    kb.text(text, data).row();
+  }
   return kb;
 }
 
@@ -59,7 +81,11 @@ export function appendNavBar(
 ): InlineKeyboard {
   if (buttons.length === 0) return kb;
   for (const btn of buttons) {
-    kb.text(btn.text, btn.data);
+    if (btn.icon_custom_emoji_id) {
+      kb.text({ text: btn.text, icon_custom_emoji_id: btn.icon_custom_emoji_id }, btn.data);
+    } else {
+      kb.text(btn.text, btn.data);
+    }
   }
   kb.row();
   return kb;

@@ -12,16 +12,13 @@ import {
   type PageKey,
 } from "../../services/cms/PageContentService";
 import { presentCmsPage } from "./presentPage";
+import { safeDeleteMessage } from "../utils/safeEdit";
 
 async function deleteAdminInput(ctx: SessionContext): Promise<void> {
   const chatId = ctx.chat?.id;
   const messageId = ctx.message?.message_id;
   if (chatId == null || messageId == null) return;
-  try {
-    await ctx.api.deleteMessage(chatId, messageId);
-  } catch (err) {
-    console.error("Could not delete admin media input:", err);
-  }
+  await safeDeleteMessage(ctx.api, chatId, messageId);
 }
 
 /**

@@ -13,19 +13,22 @@ import {
 } from "../keyboards/builders";
 import { walletMenuKeyboard } from "../user/keyboards";
 import { appendFullWidthCta, appendNavBar } from "../keyboards/grid";
+import { BUTTON_CUSTOM_EMOJIS } from "../keyboards/buttonEmojis";
 import { isAdminTelegramId } from "../../config/env";
+import { hasAnyAdminAccess } from "../admin/rbac";
 import {
   pageContentService,
   type CmsPageContent,
   type PageKey,
   type PageMediaType,
+  type LayoutColumns,
 } from "../../services/cms/PageContentService";
 import {
   settingsService,
   SWAPPAY_ENABLED,
 } from "../../services/settings/SettingsService";
 import { injectAdminControls } from "./injectAdminControls";
-import { safeEditMedia } from "../utils/safeEdit";
+import { safeEditMedia, safeDeleteMessage } from "../utils/safeEdit";
 import { panelFromCtx } from "../conversations/wait";
 
 export type PresentMode = "reply" | "edit";
@@ -43,10 +46,10 @@ function clipCaption(text: string, max = 1024): string {
   return `${text.slice(0, max - 1)}…`;
 }
 
-function supportPageKeyboard(ctx: SessionContext, pageKey: PageKey = "support"): InlineKeyboard {
+export function supportPageKeyboard(ctx: SessionContext, pageKey: PageKey = "support"): InlineKeyboard {
   const kb = new InlineKeyboard();
-  appendFullWidthCta(kb, "✉️ ارسال تیکت", Callbacks.supportOpenTicket);
-  appendNavBar(kb, { text: "🔙 بازگشت", data: Callbacks.mainMenu });
+  appendFullWidthCta(kb, "ارسال تیکت", Callbacks.supportOpenTicket, BUTTON_CUSTOM_EMOJIS.SUPPORT_TICKET);
+  appendNavBar(kb, { text: "بازگشت", data: Callbacks.mainMenu, icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK });
   return injectAdminControls(ctx, kb, pageKey);
 }
 
@@ -76,6 +79,52 @@ async function rememberPanel(ctx: SessionContext, chatId: number, messageId: num
 }
 
 /**
+ * Resolves the appropriate InlineKeyboard for any CMS page key.
+ * Every returned keyboard is guaranteed to include the page's actions and a back button.
+ */
+export async function resolveCmsKeyboard(
+  ctx: SessionContext,
+  pageKey: PageKey,
+  isAdmin: boolean,
+  options?: { pending?: boolean; layout?: LayoutColumns },
+): Promise<InlineKeyboard> {
+  const layout = options?.layout ?? 2;
+  const pending = options?.pending ?? false;
+
+  switch (pageKey) {
+    case "home":
+      return mainMenuKeyboard(pending, isAdmin, layout);
+
+    case "shop": {
+      const categories = await catalogService.listActiveCategories();
+      if (categories.length === 0) {
+        return mainMenuKeyboard(false, isAdmin, layout);
+      }
+      return categoriesKeyboard(categories, layout);
+    }
+
+    case "account":
+      return mainMenuKeyboard(pending, isAdmin, layout);
+
+    case "wallet": {
+      const [swapEnabled, methods] = await Promise.all([
+        settingsService.getBoolSetting(SWAPPAY_ENABLED, true),
+        paymentMethodService.listActiveForButtons(),
+      ]);
+      return walletMenuKeyboard({
+        swapEnabled,
+        methods: toPlain(methods),
+        layoutColumns: layout,
+      });
+    }
+
+    case "support":
+    default:
+      return supportPageKeyboard(ctx, "support");
+  }
+}
+
+/**
  * Deliver a CMS page message. When message kind must change (text ↔ media / photo ↔ video),
  * delete the old panel and send a fresh message (Telegram cannot edit text into media).
  */
@@ -92,21 +141,40 @@ async function deliverCmsMessage(
   const mediaType: PageMediaType = hasCmsMedia ? (page.mediaType as PageMediaType) : "photo";
   const media = hasCmsMedia ? page.mediaFileId! : defaultFallbackPhoto(pageKey);
 
+  const finalMarkup =
+    reply_markup ??
+    (await resolveCmsKeyboard(
+      ctx,
+      pageKey,
+      ctx.from ? await hasAnyAdminAccess(ctx.from.id) : false,
+      { layout: page.layoutColumns },
+    ));
+
   if (mode === "reply") {
-    const sent =
-      mediaType === "video"
-        ? await ctx.replyWithVideo(media, {
-            caption: text,
-            parse_mode: "Markdown",
-            reply_markup,
-          })
-        : await ctx.replyWithPhoto(media, {
-            caption: text,
-            parse_mode: "Markdown",
-            reply_markup,
-          });
-    await rememberPanel(ctx, sent.chat.id, sent.message_id);
-    return;
+    try {
+      const sent =
+        mediaType === "video"
+          ? await ctx.replyWithVideo(media, {
+              caption: text,
+              parse_mode: "Markdown",
+              reply_markup: finalMarkup,
+            })
+          : await ctx.replyWithPhoto(media, {
+              caption: text,
+              parse_mode: "Markdown",
+              reply_markup: finalMarkup,
+            });
+      await rememberPanel(ctx, sent.chat.id, sent.message_id);
+      return;
+    } catch (err) {
+      console.warn("[deliverCmsMessage] media reply failed, falling back to text:", err);
+      const sent = await ctx.reply(text, {
+        parse_mode: "Markdown",
+        reply_markup: finalMarkup,
+      });
+      await rememberPanel(ctx, sent.chat.id, sent.message_id);
+      return;
+    }
   }
 
   const currentKind = detectMessageMediaKind(ctx);
@@ -117,7 +185,7 @@ async function deliverCmsMessage(
 
   if (canInPlaceEdit) {
     try {
-      await safeEditMedia(ctx, media, text, reply_markup, mediaType);
+      await safeEditMedia(ctx, media, text, finalMarkup, mediaType);
       const panel = panelFromCtx(ctx);
       if (panel) await rememberPanel(ctx, panel.chatId, panel.messageId);
       return;
@@ -135,26 +203,31 @@ async function deliverCmsMessage(
     ctx.callbackQuery?.message?.message_id;
 
   if (chatId != null && oldMessageId != null) {
-    try {
-      await ctx.api.deleteMessage(chatId, oldMessageId);
-    } catch (err) {
-      console.warn("[deliverCmsMessage] delete old panel failed:", err);
-    }
+    await safeDeleteMessage(ctx.api, chatId, oldMessageId);
   }
 
-  const sent =
-    mediaType === "video"
-      ? await ctx.replyWithVideo(media, {
-          caption: text,
-          parse_mode: "Markdown",
-          reply_markup,
-        })
-      : await ctx.replyWithPhoto(media, {
-          caption: text,
-          parse_mode: "Markdown",
-          reply_markup,
-        });
-  await rememberPanel(ctx, sent.chat.id, sent.message_id);
+  try {
+    const sent =
+      mediaType === "video"
+        ? await ctx.replyWithVideo(media, {
+            caption: text,
+            parse_mode: "Markdown",
+            reply_markup: finalMarkup,
+          })
+        : await ctx.replyWithPhoto(media, {
+            caption: text,
+            parse_mode: "Markdown",
+            reply_markup: finalMarkup,
+          });
+    await rememberPanel(ctx, sent.chat.id, sent.message_id);
+  } catch (err) {
+    console.warn("[deliverCmsMessage] remount media failed, falling back to text:", err);
+    const sent = await ctx.reply(text, {
+      parse_mode: "Markdown",
+      reply_markup: finalMarkup,
+    });
+    await rememberPanel(ctx, sent.chat.id, sent.message_id);
+  }
 }
 
 /**
@@ -193,9 +266,10 @@ export async function presentCmsPage(
       );
     }
     const caption = withBanner(lines.join("\n"), banner);
+    const isAdmin = await hasAnyAdminAccess(ctx.from.id);
     const kb = injectAdminControls(
       ctx,
-      mainMenuKeyboard(Boolean(pending), isAdminTelegramId(ctx.from.id), layout),
+      mainMenuKeyboard(Boolean(pending), isAdmin, layout),
       "home",
     );
     await deliverCmsMessage(ctx, mode, pageKey, page, caption, kb);
@@ -206,6 +280,7 @@ export async function presentCmsPage(
     const categories = await catalogService.listActiveCategories();
     let caption = withBanner(baseText, banner);
     let kb: InlineKeyboard;
+    const isAdmin = await hasAnyAdminAccess(ctx.from.id);
     if (categories.length === 0) {
       caption = withBanner(
         [baseText, "", "فعلا دسته بندی فعالی در فروشگاه نیست."].join("\n"),
@@ -213,7 +288,7 @@ export async function presentCmsPage(
       );
       kb = injectAdminControls(
         ctx,
-        mainMenuKeyboard(false, isAdminTelegramId(ctx.from.id), layout),
+        mainMenuKeyboard(false, isAdmin, layout),
         "shop",
       );
     } else {
@@ -243,9 +318,10 @@ export async function presentCmsPage(
     } else {
       lines.push("✅ فاکتور باز ندارید.");
     }
+    const isAdmin = await hasAnyAdminAccess(ctx.from.id);
     const kb = injectAdminControls(
       ctx,
-      mainMenuKeyboard(Boolean(pending), isAdminTelegramId(ctx.from.id), layout),
+      mainMenuKeyboard(Boolean(pending), isAdmin, layout),
       "account",
     );
     await deliverCmsMessage(

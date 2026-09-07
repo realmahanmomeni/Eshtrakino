@@ -7,7 +7,7 @@ export type TicketWithUser = Ticket & { user: User; messages: TicketMessage[] };
 export class TicketService {
   async getOpenTicket(userId: number): Promise<TicketWithMessages | null> {
     return prisma.ticket.findFirst({
-      where: { userId, status: TicketStatus.OPEN },
+      where: { userId, status: { in: [TicketStatus.OPEN, TicketStatus.ANSWERED] } },
       include: { messages: { orderBy: { createdAt: "asc" } } },
       orderBy: { createdAt: "desc" },
     });
@@ -64,7 +64,10 @@ export class TicketService {
       });
       await prisma.ticket.update({
         where: { id: existing.id },
-        data: { updatedAt: new Date() },
+        data: { 
+          updatedAt: new Date(),
+          status: TicketStatus.OPEN // Switch back to OPEN if it was ANSWERED
+        },
       });
       return (await this.getById(existing.id))!;
     }
@@ -100,7 +103,7 @@ export class TicketService {
     });
     await prisma.ticket.update({
       where: { id: ticketId },
-      data: { updatedAt: new Date(), status: TicketStatus.OPEN },
+      data: { updatedAt: new Date(), status: TicketStatus.ANSWERED },
     });
     return (await this.getById(ticketId))!;
   }

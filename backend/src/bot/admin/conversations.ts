@@ -4,27 +4,52 @@ import { catalogService } from "../../services/catalog/CatalogService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
 import { invoiceService } from "../../services/invoices/InvoiceService";
 import { formatToman, parsePrice } from "../../lib/money";
+import { exchangeRateService, convertUsdToToman } from "../../services/exchangeRateService";
 import { toPlain } from "../../lib/plain";
 import { waitCallback, waitOptionalPhoto, waitText, ensurePanel, panelFromCtx, waitTextOnPanel } from "../conversations/wait";
 import {
   adminBackupMenuKeyboard,
   adminCatalogKeyboard,
+  adminSubCategoriesKeyboard,
   adminHomeKeyboard,
+  adminForceJoinKeyboard,
   adminPaymentListKeyboard,
   adminPaymentsKeyboard,
   convCategoryPickKeyboard,
+  convSubCategoryPickKeyboard,
   convDeliveryAddProductKeyboard,
   convPaymentTypeKeyboard,
+  convDiscountScopeKeyboard,
+  convDiscountProductsMultiSelectKeyboard,
+  convDiscountTier1CategoriesKeyboard,
+  convDiscountTier2CategoryContentsKeyboard,
+  convDiscountTier3PlansKeyboard,
+  adminDiscountHubKeyboard,
+  convDiscountBatchDeleteKeyboard,
+  ConvCb,
 } from "./keyboards";
+import { discountService } from "../../services/discount/DiscountService";
 import { env } from "../../config/env";
+import { InlineKeyboard } from "grammy";
 import { ticketService } from "../../services/tickets/TicketService";
+import {
+  presentCmsCategoryView,
+  presentCmsCategoryList,
+  presentCmsSubCategoryView,
+  presentCmsSubCategoryList,
+} from "../cms/shopCms";
 import {
   settingsService,
   AUTO_BACKUP_HOURS_KEY,
   LOG_GROUP_ID_KEY,
+  LOW_STOCK_THRESHOLD_KEY,
   SWAPPAY_API_KEY,
   SWAPPAY_ENABLED,
   SWAPPAY_WALLET_ADDRESS,
+  FORCE_JOIN_ENABLED,
+  FORCE_JOIN_CHANNEL_ID,
+  FORCE_JOIN_INVITE_LINK,
+  FORCE_JOIN_TEXT,
 } from "../../services/settings/SettingsService";
 
 /** Extract Telegram supergroup id (e.g. -1001234567890) from admin input. */
@@ -73,13 +98,124 @@ export async function addCategoryConversation(
   }
 }
 
+export async function addSubCategoryConversation(
+  conversation: EshtrakinoConversation,
+  ctx: SessionContext,
+): Promise<void> {
+  try {
+    const categories = await conversation.external(async () =>
+      toPlain(await catalogService.listActiveCategories()),
+    );
+    if (categories.length === 0) {
+      await ctx.reply("⚠️ ابتدا یک دسته فعال بسازید.", {
+        reply_markup: adminCatalogKeyboard(),
+      });
+      return;
+    }
+
+    const catData = await waitCallback(
+      conversation,
+      ctx,
+      [
+        "🗂 *افزودن سرویس — مرحله ۱ از ۳*",
+        "",
+        "دسته والد (اصلی) را انتخاب کنید:",
+      ].join("\n"),
+      convCategoryPickKeyboard(categories),
+    );
+    if (!catData) {
+      await ctx.reply("عملیات لغو شد.", { reply_markup: adminSubCategoriesKeyboard() });
+      return;
+    }
+    const catMatch = /^conv:cat:(\d+)$/.exec(catData);
+    if (!catMatch) {
+      await ctx.reply("انتخاب نامعتبر بود.", { reply_markup: adminSubCategoriesKeyboard() });
+      return;
+    }
+    const categoryId = Number(catMatch[1]);
+    const category = categories.find((c) => c.id === categoryId);
+    if (!category) {
+      await ctx.reply("دسته یافت نشد.", { reply_markup: adminSubCategoriesKeyboard() });
+      return;
+    }
+
+    const name = await waitText(
+      conversation,
+      ctx,
+      [
+        "📝 *مرحله ۲ از ۳ — نام سرویس*",
+        "",
+        `دسته والد: *${category.name}*`,
+        "",
+        "نام سرویس / زیردسته را وارد کنید (مثال: `Gemini Pro` یا `Spotify Premium`):",
+      ].join("\n"),
+    );
+    if (!name) {
+      await ctx.reply("عملیات لغو شد.", { reply_markup: adminSubCategoriesKeyboard() });
+      return;
+    }
+
+    const descChoice = await waitCallback(
+      conversation,
+      ctx,
+      [
+        "🔖 *مرحله ۳ از ۳ — توضیحات سرویس*",
+        "",
+        "آیا می‌خواهید توضیحات برای این سرویس ثبت کنید؟",
+      ].join("\n"),
+      new InlineKeyboard()
+        .text("✍️ وارد کردن توضیحات", "conv:subcat:enter_desc")
+        .text("⏩ رد کردن (بدون توضیحات)", "conv:subcat:skip_desc")
+        .row()
+        .text("❌ لغو", ConvCb.cancel),
+    );
+
+    let description: string | null = null;
+    if (descChoice === "conv:subcat:enter_desc") {
+      description = await waitText(
+        conversation,
+        ctx,
+        "لطفاً متن توضیحات سرویس را ارسال کنید:",
+      );
+    }
+
+    const subCategory = await conversation.external(async () =>
+      toPlain(
+        await catalogService.createSubCategory({
+          name,
+          categoryId,
+          description,
+        }),
+      ),
+    );
+
+    await ctx.reply(
+      [
+        "✅ *سرویس با موفقیت ثبت شد*",
+        "",
+        `📑 نام سرویس: *${subCategory.name}*`,
+        `🗂 دسته والد: *${category.name}*`,
+        ...(description ? [`🔖 توضیحات: ${description}`] : []),
+      ].join("\n"),
+      { parse_mode: "Markdown", reply_markup: adminSubCategoriesKeyboard() },
+    );
+  } catch (err) {
+    console.error("addSubCategoryConversation error:", err);
+    await ctx.reply("⚠️ خطا در افزودن سرویس. دوباره تلاش کنید.", {
+      reply_markup: adminSubCategoriesKeyboard(),
+    });
+  }
+}
+
 /**
  * Add Product flow:
  * 1) Select Category
- * 2) Enter Product Name
- * 3) Enter Price
- * 4) Select Delivery Type (READY / MANUAL / CREDENTIALS_REQUIRED / USER_CHOICE)
- * 5) Ask for requiredFields (comma-separated or "no")
+ * 2) Select SubCategory / Service (optional / create on the fly)
+ * 3) Enter Plan / Product Name
+ * 4) Enter Price & Currency
+ * 5) Select Delivery Type
+ * 6) Enter Description
+ * 7) Enter Banner
  */
 export async function addProductConversation(
   conversation: EshtrakinoConversation,
@@ -122,13 +258,86 @@ export async function addProductConversation(
       return;
     }
 
+    // Step 2: Select SubCategory (Service)
+    const subCategories = await conversation.external(async () =>
+      toPlain(await catalogService.listSubCategoriesByCategory(categoryId, true)),
+    );
+
+    let subCategoryId: number | null = null;
+    let subCategoryName: string | null = null;
+
+    const subKb = convSubCategoryPickKeyboard(subCategories, {
+      allowSkip: true,
+      allowAddNew: true,
+    });
+
+    const subData = await waitCallback(
+      conversation,
+      ctx,
+      [
+        "📑 *افزودن محصول — مرحله ۲ (انتخاب سرویس)*",
+        "",
+        `دسته والد: *${category.name}*`,
+        "",
+        "سرویس / زیردسته مربوطه را انتخاب کنید:",
+        "(برای ساخت سرویس جدید «➕ افزودن سرویس جدید» و در صورت عدم نیاز «⏩ بدون سرویس» را انتخاب کنید)",
+      ].join("\n"),
+      subKb,
+    );
+
+    if (!subData) {
+      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+      return;
+    }
+
+    if (subData === "conv:subcat:none") {
+      subCategoryId = null;
+    } else if (subData === "conv:subcat:add") {
+      const newSubName = await waitText(
+        conversation,
+        ctx,
+        [
+          "➕ *افزودن سرویس جدید*",
+          "",
+          `دسته والد: *${category.name}*`,
+          "",
+          "نام سرویس جدید را وارد کنید (مثال: `Gemini Pro`):",
+        ].join("\n"),
+      );
+      if (!newSubName) {
+        await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+        return;
+      }
+      const newSub = await conversation.external(async () =>
+        toPlain(
+          await catalogService.createSubCategory({
+            name: newSubName,
+            categoryId,
+          }),
+        ),
+      );
+      subCategoryId = newSub.id;
+      subCategoryName = newSub.name;
+    } else {
+      const subMatch = /^conv:subcat:(\d+)$/.exec(subData);
+      if (!subMatch) {
+        await ctx.reply("انتخاب نامعتبر بود.", { reply_markup: adminCatalogKeyboard() });
+        return;
+      }
+      subCategoryId = Number(subMatch[1]);
+      const foundSub = subCategories.find((s) => s.id === subCategoryId);
+      if (foundSub) subCategoryName = foundSub.name;
+    }
+
     const name = await waitText(
       conversation,
       ctx,
       [
-        "📝 *مرحله ۲*",
+        "📝 *مرحله ۳ — نام پلن / محصول*",
         "",
-        "نام محصول را بفرستید:",
+        subCategoryName ? `سرویس: *${subCategoryName}*` : `دسته: *${category.name}*`,
+        "",
+        "نام پلن یا محصول را بفرستید (مثلاً `اشتراک ۱ ماهه` یا `پلن سالانه`):",
       ].join("\n"),
     );
     if (!name) {
@@ -136,69 +345,126 @@ export async function addProductConversation(
       return;
     }
 
-    let price: number | null = null;
-    for (let attempt = 0; attempt < 5 && price === null; attempt++) {
-      const priceRaw = await waitText(
-        conversation,
-        ctx,
-        attempt === 0
-          ? [
-              "💵 *مرحله ۳*",
-              "",
-              "قیمت محصول را به *تومان* بفرستید",
-              "(مثلاً `750000` یا `750,000`):",
-            ].join("\n")
-          : [
-              "⚠️ *قیمت نامعتبر*",
-              "",
-              "دوباره عدد تومان را بفرستید:",
-            ].join("\n"),
-      );
-      if (!priceRaw) {
-        await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
-        return;
-      }
-      price = parsePrice(priceRaw);
-    }
-    if (price === null) {
-      await ctx.reply("قیمت معتبر دریافت نشد.", { reply_markup: adminCatalogKeyboard() });
-      return;
-    }
-
-    const delData = await waitCallback(
+    const currData = await waitCallback(
       conversation,
       ctx,
       [
-        "🚚 *مرحله ۴*",
+        "💵 *مرحله ۴ — واحد قیمت گذاری*",
+        "",
+        "واحد قیمت گذاری محصول را انتخاب کنید:",
+      ].join("\n"),
+      new InlineKeyboard()
+        .text("💵 قیمت دلاری (USD)", "conv:prod_curr:USD")
+        .text("🇮🇷 قیمت تومانی (TOMAN)", "conv:prod_curr:TOMAN")
+        .row(),
+    );
+    if (!currData) {
+      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+      return;
+    }
+
+    let currency = "TOMAN";
+    let price: number | null = null;
+    let usdPrice: number | null = null;
+
+    if (currData === "conv:prod_curr:USD") {
+      currency = "USD";
+      for (let attempt = 0; attempt < 5 && usdPrice === null; attempt++) {
+        const usdRaw = await waitText(
+          conversation,
+          ctx,
+          attempt === 0
+            ? [
+                "💵 *قیمت دلاری (USD)*",
+                "",
+                "قیمت محصول را به *دلار* بفرستید (مثلاً `5` یا `9.99`):",
+              ].join("\n")
+            : [
+                "⚠️ *قیمت دلاری نامعتبر*",
+                "",
+                "دوباره عدد دلار را بفرستید (مثلاً `5` یا `9.99`):",
+              ].join("\n"),
+        );
+        if (!usdRaw) {
+          await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+          return;
+        }
+        const cleaned = usdRaw.trim().replace(/,/g, ".");
+        const n = parseFloat(cleaned);
+        if (Number.isFinite(n) && n > 0) {
+          usdPrice = Math.round(n * 100) / 100;
+        }
+      }
+      if (usdPrice === null) {
+        await ctx.reply("قیمت دلاری معتبر دریافت نشد.", { reply_markup: adminCatalogKeyboard() });
+        return;
+      }
+      price = await conversation.external(async () => {
+        return convertUsdToToman(usdPrice!);
+      });
+    } else {
+      currency = "TOMAN";
+      for (let attempt = 0; attempt < 5 && price === null; attempt++) {
+        const priceRaw = await waitText(
+          conversation,
+          ctx,
+          attempt === 0
+            ? [
+                "💵 *قیمت تومانی*",
+                "",
+                "قیمت محصول را به *تومان* بفرستید (مثلا 50000):",
+              ].join("\n")
+            : [
+                "⚠️ *قیمت نامعتبر*",
+                "",
+                "دوباره مبلغ به تومان را بفرستید (فقط عدد، مثلا 50000):",
+              ].join("\n"),
+        );
+        if (!priceRaw) {
+          await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+          return;
+        }
+        price = parsePrice(priceRaw);
+      }
+      if (price === null) {
+        await ctx.reply("قیمت معتبر دریافت نشد.", { reply_markup: adminCatalogKeyboard() });
+        return;
+      }
+    }
+
+    const delivData = await waitCallback(
+      conversation,
+      ctx,
+      [
+        "🚚 *مرحله ۵ — نوع تحویل*",
         "",
         "نوع تحویل را انتخاب کنید:",
       ].join("\n"),
       convDeliveryAddProductKeyboard(),
     );
-    if (!delData) {
+    if (!delivData) {
       await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
       return;
     }
-    const delMatch =
-      /^conv:deladd:(READY|MANUAL|CREDENTIALS_REQUIRED|USER_CHOICE)$/.exec(delData);
-    if (!delMatch) {
-      await ctx.reply("نوع تحویل نامعتبر بود.", { reply_markup: adminCatalogKeyboard() });
+    const delivMatch = /^conv:deladd:([A-Z_]+)$/.exec(delivData);
+    if (!delivMatch) {
+      await ctx.reply("انتخاب نامعتبر بود.", { reply_markup: adminCatalogKeyboard() });
       return;
     }
-    const deliveryType = delMatch[1] as DeliveryType;
+    const deliveryType = delivMatch[1] as DeliveryType;
 
     const description = await waitText(
       conversation,
       ctx,
       [
-        "🔖 *مرحله ۵ — توضیحات (کپشن)*",
+        "📝 *مرحله ۶ — توضیحات محصول (اختیاری)*",
         "",
         "توضیحات محصول را بفرستید:",
         "",
         "(این متن در صفحه جزئیات محصول نمایش داده می شود)",
       ].join("\n"),
     );
-    if (!description) {
+    if (description === null) {
       await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
       return;
     }
@@ -207,7 +473,7 @@ export async function addProductConversation(
       conversation,
       ctx,
       [
-        "🖼 *مرحله ۶ — بنر محصول (اختیاری)*",
+        "🖼 *مرحله ۷ — بنر محصول (اختیاری)*",
         "",
         "تصویر بنر محصول را بفرستید، یا «بدون بنر» را بزنید:",
       ].join("\n"),
@@ -222,8 +488,11 @@ export async function addProductConversation(
       toPlain(
         await catalogService.createProduct({
           name,
-          price,
+          price: price!,
+          currency,
+          usdPrice,
           categoryId,
+          subCategoryId,
           deliveryType,
           description,
           bannerFileId,
@@ -233,6 +502,11 @@ export async function addProductConversation(
     );
 
     const bannerLine = bannerFileId ? "🖼 بنر: *ثبت شد*" : "🖼 بنر: *ندارد*";
+    const subLine = subCategoryName ? `📑 سرویس: *${subCategoryName}*` : null;
+    const priceDisplay =
+      currency === "USD" && usdPrice != null
+        ? `*$${usdPrice}* (معادل فعلی: *${formatToman(price)}*)`
+        : `*${formatToman(price)}*`;
 
     await ctx.reply(
       [
@@ -240,7 +514,7 @@ export async function addProductConversation(
         "",
         `📦 نام: *${product.name}*`,
         `🗂 دسته: *${category.name}*`,
-        `💵 قیمت: *${formatToman(price)}*`,
+        `💵 قیمت: ${priceDisplay}`,
         `🚚 تحویل: *${deliveryType}*`,
         bannerLine,
       ].join("\n"),
@@ -668,106 +942,88 @@ export async function adminReplyTicketConversation(
   ctx: SessionContext,
 ): Promise<void> {
   try {
-    const ticketId = await conversation.external((c) => c.session.adminTargetId ?? null);
-    if (!ticketId) {
-      await ctx.reply("تیکتی انتخاب نشده.");
+    let ticketId = 0;
+    
+    if (ctx.callbackQuery?.data?.startsWith("adm:tkt:reply:")) {
+      ticketId = Number(ctx.callbackQuery.data.split(":")[3]);
+    } else if (ctx.session?.adminTargetId) {
+      ticketId = Number(ctx.session.adminTargetId);
+    }
+
+    if (!ticketId || isNaN(ticketId)) {
+      await ctx.reply("⚠️ خطای سیستمی: شماره تیکت یافت نشد.");
       return;
     }
 
-    const ticket = await conversation.external(async () =>
-      toPlain(await ticketService.getByIdWithUser(ticketId)),
-    );
-    if (!ticket) {
+    // BULLETPROOF FIX: Return ONLY the primitive string value, never the raw Prisma object.
+    const userTelegramId = await conversation.external(async () => {
+      const { prisma } = await import("../../lib/prisma.js");
+      const t = await prisma.ticket.findUnique({
+        where: { id: ticketId },
+        include: { user: true }
+      });
+      return t ? String(t.user.telegramId) : null;
+    });
+
+    if (!userTelegramId) {
       await ctx.reply("تیکت یافت نشد.");
       return;
     }
 
-    const text = await waitText(
-      conversation,
-      ctx,
-      [
-        "💬 *پاسخ به تیکت*",
-        "",
-        `🎫 تیکت: *#${ticketId}*`,
-        "",
-        "متن پاسخ را بنویسید:",
-      ].join("\n"),
-    );
+    const promptText = `💬 پاسخ به تیکت\n\n🎫 شماره تیکت: ${ticketId}\n\nمتن پاسخ خود را بنویسید:`;
+    const text = await waitText(conversation, ctx, promptText);
+    
     if (!text) {
-      await conversation.external((c) => {
-        c.session.adminTargetId = undefined;
-        c.session.adminTargetType = undefined;
-      });
+      if (ctx.session) {
+        ctx.session.adminTargetId = undefined;
+        ctx.session.adminTargetType = undefined;
+      }
       await ctx.reply("پاسخ لغو شد.");
       return;
     }
 
-    const adminTelegramId = ctx.from!.id;
+    const adminTelegramId = BigInt(ctx.from!.id);
+    
     await conversation.external(async () => {
-      await ticketService.createAdminReply(ticketId, BigInt(adminTelegramId), text);
-    });
-    await conversation.external((c) => {
-      c.session.adminTargetId = undefined;
-      c.session.adminTargetType = undefined;
+      const { prisma } = await import("../../lib/prisma.js");
+      await prisma.ticketMessage.create({
+        data: {
+          ticketId: ticketId,
+          sender: "ADMIN",
+          adminTelegramId: adminTelegramId,
+          text: text.trim(),
+        },
+      });
+      await prisma.ticket.update({
+        where: { id: ticketId },
+        data: { updatedAt: new Date(), status: "ANSWERED" },
+      });
     });
 
-    try {
-      await ctx.api.sendMessage(
-        String(ticket.user.telegramId),
-        [
-          "🎧 پاسخ پشتیبانی",
-          "",
-          `🎫 تیکت: #${ticketId}`,
-          "",
-          text,
-        ].join("\n"),
-      );
-    } catch (err) {
-      console.error("Failed to deliver ticket reply:", err);
+    if (ctx.session) {
+      ctx.session.adminTargetId = undefined;
+      ctx.session.adminTargetType = undefined;
     }
 
-    for (const id of env.adminIds) {
-      if (id === ctx.from!.id) continue;
+    await conversation.external(async () => {
       try {
         await ctx.api.sendMessage(
-          id,
-          [
-            "✅ پاسخ ادمین ارسال شد",
-            "",
-            `🎫 تیکت: #${ticketId}`,
-          ].join("\n"),
+          userTelegramId,
+          `🎧 پاسخ پشتیبانی\n\n🎫 تیکت: #${ticketId}\n\n${text.trim()}`,
+          {
+            reply_markup: new InlineKeyboard().text("پاسخ به پشتیبانی 💬", `user:tkt:reply:${ticketId}`)
+          }
         );
-      } catch {
-        /* ignore */
+      } catch (err) {
+        console.error("Failed to deliver ticket reply:", err);
       }
-    }
+    });
 
-    await ctx.reply(
-      [
-        "✅ *پاسخ ارسال شد*",
-        "",
-        `🎫 تیکت: *#${ticketId}*`,
-        "",
-        "پیام برای کاربر ارسال شد.",
-      ].join("\n"),
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "🎫 بازگشت به تیکت", callback_data: `adm:tkt:v:${ticketId}` },
-              { text: "🟢 تیکت های باز", callback_data: "adm:tkt:open" },
-            ],
-          ],
-        },
-      },
-    );
-  } catch (err) {
-    console.error("adminReplyTicketConversation error:", err);
-    await ctx.reply(
-      ["⚠️ *خطا در ارسال پاسخ تیکت*", "", "لطفا دوباره تلاش کنید."].join("\n"),
-      { parse_mode: "Markdown" },
-    );
+    await ctx.reply("✅ پاسخ شما با موفقیت برای کاربر ارسال شد.");
+
+  } catch (error) {
+    console.error("Conversation Error:", error);
+    await ctx.reply("⚠️ خطا در ارسال پاسخ تیکت. لطفا دوباره تلاش کنید.");
   }
 }
 
@@ -1049,3 +1305,992 @@ export async function setSwapWalletAddressConversation(
     );
   }
 }
+
+export async function fjSetChannelId(conversation: EshtrakinoConversation, ctx: SessionContext): Promise<void> {
+  const initPanel = panelFromCtx(ctx);
+  if (!initPanel) return;
+  const { text, panel } = await waitTextOnPanel(
+    conversation,
+    ctx,
+    "📢 *تنظیم شناسه کانال*\n\nآیدی کانال را وارد کنید (مثال: @MyChannel یا -10012345678):",
+    initPanel,
+  );
+  if (!text) return;
+  await conversation.external(() => settingsService.setSetting(FORCE_JOIN_CHANNEL_ID, text.trim()));
+  const enabled = await conversation.external(() => settingsService.getBoolSetting(FORCE_JOIN_ENABLED, false));
+  const channelId = await conversation.external(() => settingsService.getSetting(FORCE_JOIN_CHANNEL_ID));
+  const inviteLink = await conversation.external(() => settingsService.getSetting(FORCE_JOIN_INVITE_LINK));
+  await ensurePanel(ctx, "✅ شناسه کانال ثبت شد.", adminForceJoinKeyboard({ enabled, channelId, inviteLink }), panel);
+}
+
+export async function fjSetLink(conversation: EshtrakinoConversation, ctx: SessionContext): Promise<void> {
+  const initPanel = panelFromCtx(ctx);
+  if (!initPanel) return;
+  const { text, panel } = await waitTextOnPanel(
+    conversation,
+    ctx,
+    "📢 *تنظیم لینک دعوت*\n\nلینک عضویت در کانال را بفرستید (https://t.me/...):",
+    initPanel,
+  );
+  if (!text) return;
+  await conversation.external(() => settingsService.setSetting(FORCE_JOIN_INVITE_LINK, text.trim()));
+  const enabled = await conversation.external(() => settingsService.getBoolSetting(FORCE_JOIN_ENABLED, false));
+  const channelId = await conversation.external(() => settingsService.getSetting(FORCE_JOIN_CHANNEL_ID));
+  const inviteLink = await conversation.external(() => settingsService.getSetting(FORCE_JOIN_INVITE_LINK));
+  await ensurePanel(ctx, "✅ لینک دعوت ثبت شد.", adminForceJoinKeyboard({ enabled, channelId, inviteLink }), panel);
+}
+
+export async function fjSetText(conversation: EshtrakinoConversation, ctx: SessionContext): Promise<void> {
+  const initPanel = panelFromCtx(ctx);
+  if (!initPanel) return;
+  const { text, panel } = await waitTextOnPanel(
+    conversation,
+    ctx,
+    "📢 *تنظیم متن پیام جوین اجباری*\n\nمتنی که به کاربرانی که عضو نیستند نمایش داده می‌شود را بفرستید (از Markdown پشتیبانی می‌کند):",
+    initPanel,
+  );
+  if (!text) return;
+  await conversation.external(() => settingsService.setSetting(FORCE_JOIN_TEXT, text));
+  const enabled = await conversation.external(() => settingsService.getBoolSetting(FORCE_JOIN_ENABLED, false));
+  const channelId = await conversation.external(() => settingsService.getSetting(FORCE_JOIN_CHANNEL_ID));
+  const inviteLink = await conversation.external(() => settingsService.getSetting(FORCE_JOIN_INVITE_LINK));
+  await ensurePanel(ctx, "✅ متن پیام ثبت شد.", adminForceJoinKeyboard({ enabled, channelId, inviteLink }), panel);
+}
+
+export async function addDiscountConversation(
+  conversation: EshtrakinoConversation,
+  ctx: SessionContext,
+): Promise<void> {
+  let panel = panelFromCtx(ctx);
+  if (!panel) return;
+
+  try {
+    // Step A: Product Scope Choice
+    const scopePrompt = [
+      "🏷 *ثبت کد تخفیف جدید*",
+      "",
+      "محدوده محصولات مشمول این کد تخفیف را مشخص کنید:",
+    ].join("\n");
+
+    panel = await ensurePanel(ctx, scopePrompt, convDiscountScopeKeyboard(), panel);
+
+    let appliesToAll = true;
+    let targetProductIds: number[] = [];
+
+    while (true) {
+      const update = await conversation.waitFor("callback_query:data");
+      const cb = update.callbackQuery?.data;
+
+      if (cb === ConvCb.cancel) {
+        try {
+          await update.answerCallbackQuery({ text: "لغو شد" });
+        } catch {}
+        await ensurePanel(
+          update,
+          "❌ ثبت کد تخفیف لغو شد.",
+          adminHomeKeyboard(),
+          panel,
+        );
+        return;
+      }
+
+      if (cb === ConvCb.discountScopeAll) {
+        try {
+          await update.answerCallbackQuery();
+        } catch {}
+        appliesToAll = true;
+        break;
+      }
+
+      if (cb === ConvCb.discountScopeSpecific) {
+        try {
+          await update.answerCallbackQuery();
+        } catch {}
+        appliesToAll = false;
+        break;
+      }
+    }
+
+    // Step B: 3-Tier Hierarchical Multi-Select if specific products chosen
+    if (!appliesToAll) {
+      const selectedIds = new Set<number>();
+      let confirmed = false;
+
+      type DiscountSelectorTier = "categories" | "subcategories" | "products";
+      let currentTier: DiscountSelectorTier = "categories";
+      let currentCatId: number | null = null;
+      let currentCatName: string = "";
+      let currentSubCatId: number | null = null;
+      let currentSubCatName: string = "";
+
+      while (!confirmed) {
+        if (currentTier === "categories") {
+          const categories = await conversation.external(async () => {
+            const rows = await catalogService.listCategories(true);
+            return toPlain(rows);
+          });
+
+          if (!categories || categories.length === 0) {
+            await ensurePanel(
+              ctx,
+              "⚠️ هیچ دسته‌بندی فعالی در سیستم تعریف نشده است.",
+              adminHomeKeyboard(),
+              panel,
+            );
+            return;
+          }
+
+          const selectPrompt = [
+            "🎯 *انتخاب محصولات مشمول تخفیف*",
+            "",
+            "📁 دسته‌بندی مورد نظر را انتخاب کنید:",
+            `▫️ تعداد کل محصولات انتخاب شده: *${selectedIds.size}*`,
+          ].join("\n");
+
+          panel = await ensurePanel(
+            ctx,
+            selectPrompt,
+            convDiscountTier1CategoriesKeyboard(categories, selectedIds.size),
+            panel,
+          );
+        } else if (currentTier === "subcategories" && currentCatId != null) {
+          const catId = currentCatId;
+          const data = await conversation.external(async () => {
+            const [subCats, prods] = await Promise.all([
+              catalogService.listSubCategoriesByCategory(catId, true),
+              catalogService.listActiveProductsByCategory(catId),
+            ]);
+            return {
+              subCategories: toPlain(subCats),
+              standaloneProducts: toPlain(prods.filter((p: any) => p.subCategoryId == null)),
+            };
+          });
+
+          const { subCategories, standaloneProducts } = data;
+
+          const selectPrompt = [
+            "🎯 *انتخاب محصولات مشمول تخفیف*",
+            "",
+            `📁 دسته‌بندی: *${currentCatName}*`,
+            "",
+            "سرویس مورد نظر را انتخاب کنید یا محصولات تکی را علامت بزنید:",
+            `▫️ تعداد کل محصولات انتخاب شده: *${selectedIds.size}*`,
+          ].join("\n");
+
+          panel = await ensurePanel(
+            ctx,
+            selectPrompt,
+            convDiscountTier2CategoryContentsKeyboard(
+              subCategories,
+              standaloneProducts,
+              selectedIds,
+              selectedIds.size,
+            ),
+            panel,
+          );
+        } else if (currentTier === "products" && currentSubCatId != null) {
+          const subId = currentSubCatId;
+          const plans = await conversation.external(async () => {
+            const rows = await catalogService.listActiveProductsBySubCategory(subId);
+            return toPlain(rows);
+          });
+
+          const selectPrompt = [
+            "🎯 *انتخاب محصولات مشمول تخفیف*",
+            "",
+            `📁 دسته‌بندی: *${currentCatName}*`,
+            `📑 سرویس: *${currentSubCatName}*`,
+            "",
+            "پلن‌های مورد نظر را با کلیک روی آنها انتخاب یا لغو کنید:",
+            `▫️ تعداد کل محصولات انتخاب شده: *${selectedIds.size}*`,
+          ].join("\n");
+
+          panel = await ensurePanel(
+            ctx,
+            selectPrompt,
+            convDiscountTier3PlansKeyboard(plans, selectedIds, selectedIds.size),
+            panel,
+          );
+        }
+
+        const update = await conversation.waitFor("callback_query:data");
+        const cb = update.callbackQuery?.data;
+
+        if (cb === "dsc:cancel" || cb === ConvCb.cancel) {
+          try {
+            await update.answerCallbackQuery({ text: "لغو شد" });
+          } catch {}
+          await ensurePanel(
+            update,
+            "❌ ثبت کد تخفیف لغو شد.",
+            adminHomeKeyboard(),
+            panel,
+          );
+          return;
+        }
+
+        if (cb === "dsc:done" || cb === ConvCb.discountConfirmProducts) {
+          if (selectedIds.size === 0) {
+            try {
+              await update.answerCallbackQuery({
+                text: "⚠️ لطفاً حداقل یک محصول را انتخاب کنید.",
+                show_alert: true,
+              });
+            } catch {}
+            continue;
+          }
+          try {
+            await update.answerCallbackQuery({ text: "محصولات تایید شدند ✅" });
+          } catch {}
+          targetProductIds = Array.from(selectedIds);
+          confirmed = true;
+          break;
+        }
+
+        if (cb === "dsc:back_cats") {
+          try {
+            await update.answerCallbackQuery();
+          } catch {}
+          currentTier = "categories";
+          currentCatId = null;
+          currentCatName = "";
+          currentSubCatId = null;
+          currentSubCatName = "";
+          continue;
+        }
+
+        if (cb === "dsc:back_subcats") {
+          try {
+            await update.answerCallbackQuery();
+          } catch {}
+          currentTier = "subcategories";
+          currentSubCatId = null;
+          currentSubCatName = "";
+          continue;
+        }
+
+        if (cb?.startsWith("dsc:cat:")) {
+          const catId = Number(cb.split(":")[2]);
+          if (!isNaN(catId)) {
+            const cat = await conversation.external(async () => {
+              const c = await catalogService.getCategory(catId);
+              return c ? toPlain(c) : null;
+            });
+            currentTier = "subcategories";
+            currentCatId = catId;
+            currentCatName = cat?.name ?? "دسته‌بندی";
+            currentSubCatId = null;
+            currentSubCatName = "";
+          }
+          try {
+            await update.answerCallbackQuery();
+          } catch {}
+          continue;
+        }
+
+        if (cb?.startsWith("dsc:subcat:")) {
+          const subCatId = Number(cb.split(":")[2]);
+          if (!isNaN(subCatId)) {
+            const sub = await conversation.external(async () => {
+              const s = await catalogService.getSubCategoryById(subCatId);
+              return s ? toPlain(s) : null;
+            });
+            currentTier = "products";
+            currentSubCatId = subCatId;
+            currentSubCatName = sub?.name ?? "سرویس";
+            if (sub?.categoryId) {
+              currentCatId = sub.categoryId;
+            }
+          }
+          try {
+            await update.answerCallbackQuery();
+          } catch {}
+          continue;
+        }
+
+        if (cb?.startsWith("dsc:tog:") || cb?.startsWith("conv:dsc:tog:")) {
+          const pid = Number(cb.replace("conv:dsc:tog:", "").replace("dsc:tog:", ""));
+          if (!isNaN(pid)) {
+            if (selectedIds.has(pid)) {
+              selectedIds.delete(pid);
+            } else {
+              selectedIds.add(pid);
+            }
+          }
+          try {
+            await update.answerCallbackQuery();
+          } catch {}
+          continue;
+        }
+      }
+    }
+
+    // Step C: Discount Code Text
+    let codeStr = "";
+    while (true) {
+      const { text, panel: p } = await waitTextOnPanel(
+        conversation,
+        ctx,
+        [
+          "🏷 *عنوان کد تخفیف*",
+          "",
+          "کد تخفیف را به انگلیسی ارسال کنید (مثال: `OFF20` یا `NOROOZ`):",
+        ].join("\n"),
+        panel,
+      );
+      panel = p;
+      if (!text) return;
+
+      const normalized = text.trim().toUpperCase();
+      if (normalized.length < 2 || normalized.length > 32) {
+        continue;
+      }
+
+      const exists = await conversation.external(async () => {
+        const found = await discountService.getByCode(normalized);
+        return Boolean(found);
+      });
+
+      if (exists) {
+        const pErr = await ensurePanel(
+          ctx,
+          `⚠️ کد تخفیف \`${normalized}\` قبلاً ثبت شده است. لطفاً کد دیگری بفرستید:`,
+          { inline_keyboard: [[{ text: "❌ لغو", callback_data: ConvCb.cancel }]] },
+          panel,
+        );
+        panel = pErr;
+        continue;
+      }
+
+      codeStr = normalized;
+      break;
+    }
+
+    // Step D: Percentage
+    let percentage = 0;
+    while (true) {
+      const { text, panel: p } = await waitTextOnPanel(
+        conversation,
+        ctx,
+        [
+          "🔢 *درصد تخفیف*",
+          "",
+          `کد تخفیف: \`${codeStr}\``,
+          "درصد تخفیف را به صورت عددی بین ۱ تا ۱۰۰ وارد کنید (مثال: `20`):",
+        ].join("\n"),
+        panel,
+      );
+      panel = p;
+      if (!text) return;
+
+      const num = parseInt(text.trim(), 10);
+      if (isNaN(num) || num < 1 || num > 100) {
+        continue;
+      }
+      percentage = num;
+      break;
+    }
+
+    // Step E: Usage Limit Count
+    let maxUses: number | null = null;
+    while (true) {
+      const { text, panel: p } = await waitTextOnPanel(
+        conversation,
+        ctx,
+        [
+          "👥 *سقف تعداد استفاده*",
+          "",
+          "حداکثر دفعات قابل استفاده از این کد را وارد کنید (مثال: `10`).",
+          "_برای نامحدود بودن عدد 0 را ارسال کنید:_",
+        ].join("\n"),
+        panel,
+      );
+      panel = p;
+      if (!text) return;
+
+      const num = parseInt(text.trim(), 10);
+      if (isNaN(num) || num < 0) {
+        continue;
+      }
+      maxUses = num === 0 ? null : num;
+      break;
+    }
+
+    // Save record
+    const created = await conversation.external(async () => {
+      const record = await discountService.createDiscountCode({
+        code: codeStr,
+        percentage,
+        maxUses,
+        appliesToAll,
+        productIds: targetProductIds,
+      });
+      return toPlain(record);
+    });
+
+    const scopeLabel = created.appliesToAll
+      ? "🌐 همه محصولات فروشگاه"
+      : `🎯 ${created.productIds.length} محصول اختصاصی`;
+    const usesLabel = created.maxUses != null ? `${created.maxUses} بار` : "نامحدود ♾";
+
+    const summaryText = [
+      "✅ *کد تخفیف با موفقیت ایجاد شد!*",
+      "",
+      `🏷 کد تخفیف: \`${created.code}\``,
+      `📊 درصد تخفیف: *${created.percentage}٪*`,
+      `📦 محدوده اعمال: *${scopeLabel}*`,
+      `👥 سقف استفاده: *${usesLabel}*`,
+      `🔘 وضعیت: *فعال*`,
+    ].join("\n");
+
+    await ensurePanel(ctx, summaryText, adminDiscountHubKeyboard(), panel);
+  } catch (err) {
+    console.error("addDiscountConversation error:", err);
+    await ensurePanel(
+      ctx,
+      "❌ خطا در ایجاد کد تخفیف.",
+      adminDiscountHubKeyboard(),
+      panel,
+    );
+  }
+}
+
+export function formatDiscountHubText(
+  codes: Array<{ code: string; percentage: number; usedCount: number; maxUses: number | null }>,
+): string {
+  const lines = [
+    "🏷 *مدیریت کدهای تخفیف*",
+    "",
+  ];
+  if (!codes || codes.length === 0) {
+    lines.push("در حال حاضر هیچ کد تخفیفی ثبت نشده است.");
+  } else {
+    for (const c of codes) {
+      const maxStr = c.maxUses != null ? c.maxUses : "نامحدود";
+      lines.push(`▫️ \`${c.code}\` | تخفیف: *${c.percentage}%* | استفاده: *${c.usedCount}/${maxStr}*`);
+    }
+  }
+  return lines.join("\n");
+}
+
+export async function deleteDiscountCodesConversation(
+  conversation: EshtrakinoConversation,
+  ctx: SessionContext,
+): Promise<void> {
+  let panel = panelFromCtx(ctx);
+  if (!panel) return;
+
+  try {
+    const initialCodes = await conversation.external(async () => {
+      const rows = await discountService.listAllDiscountCodes();
+      return toPlain(rows);
+    });
+
+    if (!initialCodes || initialCodes.length === 0) {
+      try {
+        await ctx.answerCallbackQuery({
+          text: "⚠️ هیچ کد تخفیفی برای حذف وجود ندارد.",
+          show_alert: true,
+        });
+      } catch {}
+      await ensurePanel(
+        ctx,
+        formatDiscountHubText([]),
+        adminDiscountHubKeyboard(),
+        panel,
+      );
+      return;
+    }
+
+    const selectedIds = new Set<number>();
+
+    while (true) {
+      const prompt = [
+        "🗑 *حذف کدهای تخفیف*",
+        "",
+        "کدهای تخفیف مورد نظر برای حذف را انتخاب کنید:",
+        `▫️ تعداد انتخاب شده: *${selectedIds.size}*`,
+      ].join("\n");
+
+      panel = await ensurePanel(
+        ctx,
+        prompt,
+        convDiscountBatchDeleteKeyboard(initialCodes, selectedIds),
+        panel,
+      );
+
+      const update = await conversation.waitFor("callback_query:data");
+      const cb = update.callbackQuery?.data;
+
+      if (cb === "dsc_del:cancel") {
+        try {
+          await update.answerCallbackQuery({ text: "عملیات لغو شد" });
+        } catch {}
+        const latestCodes = await conversation.external(async () => {
+          const rows = await discountService.listAllDiscountCodes();
+          return toPlain(rows);
+        });
+        await ensurePanel(
+          update,
+          formatDiscountHubText(latestCodes),
+          adminDiscountHubKeyboard(),
+          panel,
+        );
+        return;
+      }
+
+      if (cb === "dsc_del:confirm") {
+        if (selectedIds.size === 0) {
+          try {
+            await update.answerCallbackQuery({
+              text: "⚠️ لطفاً حداقل یک کد را برای حذف انتخاب کنید.",
+              show_alert: true,
+            });
+          } catch {}
+          continue;
+        }
+
+        const idsToDelete = Array.from(selectedIds);
+        const deletedCount = await conversation.external(async () => {
+          return await discountService.deleteDiscountCodes(idsToDelete);
+        });
+
+        try {
+          await update.answerCallbackQuery({
+            text: `✅ تعداد ${deletedCount} کد تخفیف حذف شدند.`,
+          });
+        } catch {}
+
+        const remainingCodes = await conversation.external(async () => {
+          const rows = await discountService.listAllDiscountCodes();
+          return toPlain(rows);
+        });
+
+        const successText = [
+          `✅ تعداد *${deletedCount}* کد تخفیف با موفقیت حذف شدند.`,
+          "",
+          formatDiscountHubText(remainingCodes),
+        ].join("\n");
+
+        await ensurePanel(
+          update,
+          successText,
+          adminDiscountHubKeyboard(),
+          panel,
+        );
+        return;
+      }
+
+      if (cb?.startsWith("dsc_del:tog:")) {
+        const id = Number(cb.split(":")[2]);
+        if (!isNaN(id)) {
+          if (selectedIds.has(id)) {
+            selectedIds.delete(id);
+          } else {
+            selectedIds.add(id);
+          }
+        }
+        try {
+          await update.answerCallbackQuery();
+        } catch {}
+        continue;
+      }
+    }
+  } catch (err) {
+    console.error("deleteDiscountCodesConversation error:", err);
+    await ensurePanel(
+      ctx,
+      "❌ خطا در حذف کدهای تخفیف.",
+      adminDiscountHubKeyboard(),
+      panel,
+    );
+  }
+}
+
+export async function editCategoryCmsConversation(
+  conversation: EshtrakinoConversation,
+  ctx: SessionContext,
+): Promise<void> {
+  try {
+    const categoryId = await conversation.external((c) => c.session.adminCmsCategoryId ?? null);
+    const action = await conversation.external((c) => c.session.adminCmsAction ?? "all");
+
+    if (!categoryId) {
+      await presentCmsCategoryList(ctx, panelFromCtx(ctx), "⚠️ دسته هدف مشخص نیست.");
+      return;
+    }
+
+    let panel = panelFromCtx(ctx);
+    const category = await conversation.external(async () => {
+      const row = await catalogService.getCategory(categoryId, false);
+      return row ? toPlain(row) : null;
+    });
+
+    if (!category || !category.isActive) {
+      await conversation.external((c) => {
+        c.session.adminCmsCategoryId = undefined;
+        c.session.adminCmsAction = undefined;
+      });
+      await presentCmsCategoryList(ctx, panel, "⚠️ دسته یافت نشد.");
+      return;
+    }
+
+    if (action === "desc") {
+      const prompt = [
+        "📝 *تنظیم متن توضیحات دسته*",
+        "",
+        `دسته: *${category.name}*`,
+        `توضیحات فعلی: *${(category as any).description || "تنظیم نشده"}*`,
+        "",
+        "متن جدید توضیحات را بفرستید:",
+        "(برای حذف توضیحات علامت - بفرستید یا دکمه زیر را بزنید)",
+        "",
+        "(برای انصراف /cancel را بفرستید)",
+      ].join("\n");
+
+      const kb = new InlineKeyboard()
+        .text("🗑 حذف توضیحات", "conv:cat:del_desc")
+        .row()
+        .text("❌ لغو", ConvCb.cancel);
+
+      panel = await ensurePanel(ctx, prompt, kb, panel);
+
+      while (true) {
+        const update = await conversation.waitFor([
+          "message:text",
+          "callback_query:data",
+        ]);
+
+        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
+          } catch {}
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsCategoryView(update, categoryId, panel, "❌ ویرایش متن لغو شد.");
+          return;
+        }
+
+        if (update.callbackQuery?.data === "conv:cat:del_desc" || (update.message?.text ?? "").trim() === "-") {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "توضیحات حذف شد" });
+          } catch {}
+          await conversation.external(async () => {
+            await catalogService.updateCategoryDescription(categoryId, null);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsCategoryView(update, categoryId, panel, "🗑 توضیحات دسته حذف شد.");
+          return;
+        }
+
+        const text = (update.message?.text ?? "").trim();
+        if (text) {
+          await conversation.external(async () => {
+            await catalogService.updateCategoryDescription(categoryId, text);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsCategoryView(update, categoryId, panel, "✅ متن توضیحات دسته با موفقیت ذخیره شد.");
+          return;
+        }
+      }
+    } else {
+      // Banner mode (or default)
+      const prompt = [
+        "🖼 *تنظیم بنر دسته*",
+        "",
+        `دسته: *${category.name}*`,
+        "",
+        "یک *عکس* برای بنر اختصاصی این دسته بفرستید.",
+        "یا دکمه «🗑 حذف بنر» را برای بازگشت به بنر پیش‌فرض ربات انتخاب کنید.",
+        "",
+        "(برای انصراف /cancel را بفرستید)",
+      ].join("\n");
+
+      const kb = new InlineKeyboard()
+        .text("🗑 حذف بنر (بازگشت به پیش‌فرض)", "conv:cat:del_banner")
+        .row()
+        .text("❌ لغو", ConvCb.cancel);
+
+      panel = await ensurePanel(ctx, prompt, kb, panel);
+
+      while (true) {
+        const update = await conversation.waitFor([
+          "message:photo",
+          "message:document",
+          "message:text",
+          "callback_query:data",
+        ]);
+
+        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
+          } catch {}
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsCategoryView(update, categoryId, panel, "❌ تنظیم بنر لغو شد.");
+          return;
+        }
+
+        if (
+          update.callbackQuery?.data === "conv:cat:del_banner" ||
+          (update.message?.text ?? "").trim() === "-" ||
+          (update.message?.text ?? "").trim() === "بدون بنر"
+        ) {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "بنر حذف شد" });
+          } catch {}
+          await conversation.external(async () => {
+            await catalogService.updateCategoryBanner(categoryId, null);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsCategoryView(update, categoryId, panel, "🗑 بنر اختصاصی دسته حذف شد و به حالت پیش‌فرض بازگشت.");
+          return;
+        }
+
+        let mediaFileId: string | null = null;
+        const photos = update.message?.photo;
+        if (photos && photos.length > 0) {
+          mediaFileId = photos[photos.length - 1]!.file_id;
+        } else if (update.message?.document?.mime_type?.startsWith("image/")) {
+          mediaFileId = update.message.document.file_id;
+        }
+
+        if (mediaFileId) {
+          await conversation.external(async () => {
+            await catalogService.updateCategoryBanner(categoryId, mediaFileId!);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsCategoryView(update, categoryId, panel, "✅ بنر اختصاصی دسته با موفقیت ذخیره شد.");
+          return;
+        }
+
+        if (update.callbackQuery) {
+          try {
+            await update.callbackQuery.answerCallbackQuery({ text: "لطفاً عکس بفرستید" });
+          } catch {}
+          continue;
+        }
+
+        await update.reply("⚠️ لطفاً یک تصویر ارسال کنید یا از دکمه حذف بنر / لغو استفاده کنید.");
+      }
+    }
+  } catch (err) {
+    console.error("editCategoryCmsConversation error:", err);
+    await conversation.external((c) => {
+      c.session.adminCmsCategoryId = undefined;
+      c.session.adminCmsAction = undefined;
+    }).catch(() => {});
+    await presentCmsCategoryList(ctx, panelFromCtx(ctx), "⚠️ خطا در ویرایش دسته.");
+  }
+}
+
+export async function editSubCategoryCmsConversation(
+  conversation: EshtrakinoConversation,
+  ctx: SessionContext,
+): Promise<void> {
+  try {
+    const subCategoryId = await conversation.external((c) => c.session.adminCmsSubCategoryId ?? null);
+    const action = await conversation.external((c) => c.session.adminCmsAction ?? "all");
+
+    if (!subCategoryId) {
+      await presentCmsSubCategoryList(ctx, panelFromCtx(ctx), "⚠️ زیردسته هدف مشخص نیست.");
+      return;
+    }
+
+    let panel = panelFromCtx(ctx);
+    const subCategory = await conversation.external(async () => {
+      const row = await catalogService.getSubCategoryById(subCategoryId);
+      return row ? toPlain(row) : null;
+    });
+
+    if (!subCategory || !subCategory.isActive) {
+      await conversation.external((c) => {
+        c.session.adminCmsSubCategoryId = undefined;
+        c.session.adminCmsAction = undefined;
+      });
+      await presentCmsSubCategoryList(ctx, panel, "⚠️ زیردسته یافت نشد.");
+      return;
+    }
+
+    if (action === "desc") {
+      const prompt = [
+        "📝 *تنظیم متن توضیحات زیردسته / سرویس*",
+        "",
+        `زیردسته: *${subCategory.name}*`,
+        `توضیحات فعلی: *${subCategory.description || "تنظیم نشده"}*`,
+        "",
+        "متن جدید توضیحات را بفرستید:",
+        "(برای حذف توضیحات علامت - بفرستید یا دکمه زیر را بزنید)",
+        "",
+        "(برای انصراف /cancel را بفرستید)",
+      ].join("\n");
+
+      const kb = new InlineKeyboard()
+        .text("🗑 حذف توضیحات", "conv:subcat:del_desc")
+        .row()
+        .text("❌ لغو", ConvCb.cancel);
+
+      panel = await ensurePanel(ctx, prompt, kb, panel);
+
+      while (true) {
+        const update = await conversation.waitFor([
+          "message:text",
+          "callback_query:data",
+        ]);
+
+        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
+          } catch {}
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsSubCategoryView(update, subCategoryId, panel, "❌ ویرایش متن لغو شد.");
+          return;
+        }
+
+        if (update.callbackQuery?.data === "conv:subcat:del_desc" || (update.message?.text ?? "").trim() === "-") {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "توضیحات حذف شد" });
+          } catch {}
+          await conversation.external(async () => {
+            await catalogService.updateSubCategoryDescription(subCategoryId, null);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsSubCategoryView(update, subCategoryId, panel, "🗑 توضیحات زیردسته حذف شد.");
+          return;
+        }
+
+        const text = (update.message?.text ?? "").trim();
+        if (text) {
+          await conversation.external(async () => {
+            await catalogService.updateSubCategoryDescription(subCategoryId, text);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsSubCategoryView(update, subCategoryId, panel, "✅ متن توضیحات زیردسته با موفقیت ذخیره شد.");
+          return;
+        }
+      }
+    } else {
+      // Banner mode
+      const prompt = [
+        "🖼 *تنظیم بنر زیردسته / سرویس*",
+        "",
+        `زیردسته: *${subCategory.name}*`,
+        "",
+        "یک *عکس* برای بنر اختصاصی این زیردسته بفرستید.",
+        "یا دکمه «🗑 حذف بنر» را برای ارث‌بری از بنر دسته والد یا پیش‌فرض انتخاب کنید.",
+        "",
+        "(برای انصراف /cancel را بفرستید)",
+      ].join("\n");
+
+      const kb = new InlineKeyboard()
+        .text("🗑 حذف بنر (ارث‌بری از دسته والد)", "conv:subcat:del_banner")
+        .row()
+        .text("❌ لغو", ConvCb.cancel);
+
+      panel = await ensurePanel(ctx, prompt, kb, panel);
+
+      while (true) {
+        const update = await conversation.waitFor([
+          "message:photo",
+          "message:document",
+          "message:text",
+          "callback_query:data",
+        ]);
+
+        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
+          } catch {}
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsSubCategoryView(update, subCategoryId, panel, "❌ تنظیم بنر لغو شد.");
+          return;
+        }
+
+        if (
+          update.callbackQuery?.data === "conv:subcat:del_banner" ||
+          (update.message?.text ?? "").trim() === "-" ||
+          (update.message?.text ?? "").trim() === "بدون بنر"
+        ) {
+          try {
+            await update.callbackQuery?.answerCallbackQuery({ text: "بنر حذف شد" });
+          } catch {}
+          await conversation.external(async () => {
+            await catalogService.updateSubCategoryBanner(subCategoryId, null);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsSubCategoryView(update, subCategoryId, panel, "🗑 بنر اختصاصی زیردسته حذف شد.");
+          return;
+        }
+
+        let mediaFileId: string | null = null;
+        const photos = update.message?.photo;
+        if (photos && photos.length > 0) {
+          mediaFileId = photos[photos.length - 1]!.file_id;
+        } else if (update.message?.document?.mime_type?.startsWith("image/")) {
+          mediaFileId = update.message.document.file_id;
+        }
+
+        if (mediaFileId) {
+          await conversation.external(async () => {
+            await catalogService.updateSubCategoryBanner(subCategoryId, mediaFileId!);
+          });
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          await presentCmsSubCategoryView(update, subCategoryId, panel, "✅ بنر اختصاصی زیردسته با موفقیت ذخیره شد.");
+          return;
+        }
+
+        if (update.callbackQuery) {
+          try {
+            await update.callbackQuery.answerCallbackQuery({ text: "لطفاً عکس بفرستید" });
+          } catch {}
+          continue;
+        }
+
+        await update.reply("⚠️ لطفاً یک تصویر ارسال کنید یا از دکمه حذف بنر / لغو استفاده کنید.");
+      }
+    }
+  } catch (err) {
+    console.error("editSubCategoryCmsConversation error:", err);
+    await conversation.external((c) => {
+      c.session.adminCmsSubCategoryId = undefined;
+      c.session.adminCmsAction = undefined;
+    }).catch(() => {});
+    await presentCmsSubCategoryList(ctx, panelFromCtx(ctx), "⚠️ خطا در ویرایش زیردسته.");
+  }
+}
+
+

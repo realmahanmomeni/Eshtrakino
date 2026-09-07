@@ -15,7 +15,27 @@ function isEditOptions(value: unknown): value is EditTextExtra {
 
 function normalizeExtra(extra?: EditTextExtra | InlineKeyboard | unknown): EditTextExtra | undefined {
   if (!extra) return undefined;
-  if (isEditOptions(extra)) return extra;
+  if (typeof extra === "function") {
+    try {
+      const res = (extra as () => unknown)();
+      return normalizeExtra(res);
+    } catch {
+      return undefined;
+    }
+  }
+  if (isEditOptions(extra)) {
+    const opt: EditTextExtra = { ...extra };
+    if (typeof (opt as { reply_markup?: unknown }).reply_markup === "function") {
+      try {
+        (opt as { reply_markup?: unknown }).reply_markup = (
+          (opt as { reply_markup?: () => unknown }).reply_markup!
+        )();
+      } catch {
+        (opt as { reply_markup?: unknown }).reply_markup = undefined;
+      }
+    }
+    return opt;
+  }
   return { parse_mode: "Markdown", reply_markup: extra as never };
 }
 
@@ -25,6 +45,27 @@ export function isMessageNotModified(err: unknown): boolean {
     (err.description?.includes("message is not modified") ||
       err.message.includes("message is not modified"))
   );
+}
+
+export function isMessageNotFoundOrDeleted(err: unknown): boolean {
+  return (
+    err instanceof GrammyError &&
+    (err.description?.includes("message to delete not found") ||
+      err.description?.includes("message can't be deleted"))
+  );
+}
+
+export async function safeDeleteMessage(
+  api: Api,
+  chatId: number | string,
+  messageId: number,
+): Promise<void> {
+  try {
+    await api.deleteMessage(chatId, messageId);
+  } catch (err) {
+    if (isMessageNotFoundOrDeleted(err)) return;
+    console.error("Could not delete message:", err);
+  }
 }
 
 /** Edit text in place, with caption fallback and harmless double-click handling. */
@@ -39,11 +80,23 @@ export async function safeEdit(
   } catch (err) {
     if (isMessageNotModified(err)) return;
     try {
+      let replyMarkup: unknown = normalized?.reply_markup;
+      if (typeof replyMarkup === "function") {
+        try {
+          replyMarkup = (replyMarkup as () => unknown)();
+        } catch {
+          replyMarkup = undefined;
+        }
+      }
+      // If replyMarkup is not provided, preserve the message's current inline keyboard
+      if (!replyMarkup && ctx.callbackQuery?.message && "reply_markup" in ctx.callbackQuery.message) {
+        replyMarkup = (ctx.callbackQuery.message as { reply_markup?: unknown }).reply_markup;
+      }
+
       await ctx.editMessageCaption({
         caption: text,
-        parse_mode: normalized && "parse_mode" in normalized ? normalized.parse_mode : undefined,
-        reply_markup:
-          normalized && "reply_markup" in normalized ? normalized.reply_markup : undefined,
+        parse_mode: normalized?.parse_mode ?? "Markdown",
+        reply_markup: replyMarkup as any,
       });
     } catch (captionErr) {
       if (isMessageNotModified(captionErr)) return;
@@ -66,10 +119,18 @@ export async function safeEditById(
   } catch (err) {
     if (isMessageNotModified(err)) return;
     try {
+      let replyMarkup: unknown = normalized.reply_markup;
+      if (typeof replyMarkup === "function") {
+        try {
+          replyMarkup = (replyMarkup as () => unknown)();
+        } catch {
+          replyMarkup = undefined;
+        }
+      }
       await api.editMessageCaption(chatId, messageId, {
         caption: text,
-        parse_mode: normalized.parse_mode,
-        reply_markup: normalized.reply_markup,
+        parse_mode: normalized.parse_mode ?? "Markdown",
+        reply_markup: replyMarkup as any,
       });
     } catch (captionErr) {
       if (isMessageNotModified(captionErr)) return;
@@ -83,9 +144,22 @@ export async function safeEditMedia(
   ctx: Context,
   media: string,
   caption: string,
-  reply_markup?: InlineKeyboard,
+  reply_markup?: InlineKeyboard | (() => InlineKeyboard) | unknown,
   mediaType: "photo" | "video" = "photo",
 ): Promise<void> {
+  let finalMarkup: unknown = reply_markup;
+  if (typeof finalMarkup === "function") {
+    try {
+      finalMarkup = (finalMarkup as () => unknown)();
+    } catch {
+      finalMarkup = undefined;
+    }
+  }
+  // Preserve existing reply_markup if none provided
+  if (!finalMarkup && ctx.callbackQuery?.message && "reply_markup" in ctx.callbackQuery.message) {
+    finalMarkup = (ctx.callbackQuery.message as { reply_markup?: never }).reply_markup;
+  }
+
   try {
     await ctx.editMessageMedia(
       {
@@ -94,14 +168,14 @@ export async function safeEditMedia(
         caption,
         parse_mode: "Markdown",
       },
-      { reply_markup },
+      finalMarkup ? { reply_markup: finalMarkup as never } : undefined,
     );
   } catch (err) {
     if (isMessageNotModified(err)) return;
     console.warn("[safeEditMedia] media edit failed, falling back to text:", err);
     await safeEdit(ctx, caption, {
       parse_mode: "Markdown",
-      reply_markup,
+      reply_markup: finalMarkup as never,
     });
   }
 }

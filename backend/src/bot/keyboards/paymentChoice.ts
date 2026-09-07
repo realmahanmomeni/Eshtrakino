@@ -20,6 +20,7 @@ export async function loadActivePaymentButtons(): Promise<CheckoutMethodButton[]
 export async function buildCheckoutPaymentKeyboard(
   invoiceId: number,
   balanceLabel: string,
+  options?: { hasDiscount?: boolean },
 ): Promise<ReturnType<typeof checkoutPaymentChoiceKeyboard>> {
   const [methods, swapEnabled] = await Promise.all([
     loadActivePaymentButtons(),
@@ -28,5 +29,6 @@ export async function buildCheckoutPaymentKeyboard(
   return checkoutPaymentChoiceKeyboard(invoiceId, balanceLabel, {
     methods,
     swapEnabled,
+    hasDiscount: options?.hasDiscount,
   });
 }

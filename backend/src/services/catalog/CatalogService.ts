@@ -2,8 +2,29 @@ import { prisma } from "../../lib/prisma";
 import type { Category, DeliveryType, Product } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { parseRequiredFields } from "../../lib/money";
+import { exchangeRateService, convertUsdToToman } from "../exchangeRateService";
 
 export type ProductWithCategory = Product & { category: Category };
+
+export type SubCategoryRecord = {
+  id: number;
+  name: string;
+  description: string | null;
+  coverImageUrl: string | null;
+  bannerUrl?: string | null;
+  categoryId: number;
+  category?: Category | null;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ProductWithCategoryAndSub = Product & {
+  category: Category;
+  subCategory?: SubCategoryRecord | null;
+  subCategoryId?: number | null;
+};
 
 /**
  * Catalog service — single source of truth for categories/products/prices.
@@ -15,6 +36,10 @@ export class CatalogService {
       where: { isActive: true },
       orderBy: { id: "asc" },
     });
+  }
+
+  async listCategories(activeOnly = true): Promise<Category[]> {
+    return activeOnly ? this.listActiveCategories() : this.listAllCategories();
   }
 
   async listAllCategories(): Promise<Category[]> {
@@ -40,9 +65,143 @@ export class CatalogService {
     });
   }
 
+  async updateCategoryBanner(categoryId: number, bannerUrl: string | null): Promise<Category> {
+    return (prisma.category as any).update({
+      where: { id: categoryId },
+      data: { bannerUrl: bannerUrl ? bannerUrl.trim() : null },
+    });
+  }
+
+  async updateCategoryDescription(categoryId: number, description: string | null): Promise<Category> {
+    return (prisma.category as any).update({
+      where: { id: categoryId },
+      data: { description: description && description.trim().length > 0 ? description.trim() : null },
+    });
+  }
+
   async deleteCategory(categoryId: number): Promise<Category> {
     return prisma.category.update({
       where: { id: categoryId },
+      data: { isActive: false },
+    });
+  }
+
+  // --- SubCategory (Service) CRUD ---
+
+  async listSubCategoriesByCategory(
+    categoryId: number,
+    activeOnly = true,
+  ): Promise<SubCategoryRecord[]> {
+    return (prisma as any).subCategory.findMany({
+      where: activeOnly
+        ? { categoryId, isActive: true }
+        : { categoryId },
+      include: { category: true },
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+  }
+
+  async listAllSubCategories(activeOnly = true): Promise<SubCategoryRecord[]> {
+    return (prisma as any).subCategory.findMany({
+      where: activeOnly ? { isActive: true } : {},
+      include: { category: true },
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+  }
+
+  async getSubCategoryById(id: number): Promise<SubCategoryRecord | null> {
+    return (prisma as any).subCategory.findUnique({
+      where: { id },
+      include: { category: true },
+    });
+  }
+
+  async createSubCategory(data: {
+    name: string;
+    categoryId: number;
+    description?: string | null;
+    coverImageUrl?: string | null;
+    sortOrder?: number;
+  }): Promise<SubCategoryRecord> {
+    const description =
+      typeof data.description === "string" && data.description.trim().length > 0
+        ? data.description.trim()
+        : null;
+    const coverImageUrl =
+      typeof data.coverImageUrl === "string" && data.coverImageUrl.trim().length > 0
+        ? data.coverImageUrl.trim()
+        : null;
+
+    return (prisma as any).subCategory.create({
+      data: {
+        name: data.name.trim(),
+        categoryId: data.categoryId,
+        description,
+        coverImageUrl,
+        sortOrder: data.sortOrder ?? 0,
+        isActive: true,
+      },
+    });
+  }
+
+  async updateSubCategory(
+    id: number,
+    data: Partial<{
+      name: string;
+      description: string | null;
+      coverImageUrl: string | null;
+      bannerUrl: string | null;
+      isActive: boolean;
+      sortOrder: number;
+    }>,
+  ): Promise<SubCategoryRecord> {
+    const updateData: any = {};
+    if (data.name !== undefined) updateData.name = data.name.trim();
+    if (data.description !== undefined) {
+      updateData.description =
+        typeof data.description === "string" && data.description.trim().length > 0
+          ? data.description.trim()
+          : null;
+    }
+    if (data.coverImageUrl !== undefined) {
+      updateData.coverImageUrl =
+        typeof data.coverImageUrl === "string" && data.coverImageUrl.trim().length > 0
+          ? data.coverImageUrl.trim()
+          : null;
+    }
+    if (data.bannerUrl !== undefined) {
+      updateData.bannerUrl =
+        typeof data.bannerUrl === "string" && data.bannerUrl.trim().length > 0
+          ? data.bannerUrl.trim()
+          : null;
+    }
+    if (data.isActive !== undefined) updateData.isActive = data.isActive;
+    if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder;
+
+    return (prisma as any).subCategory.update({
+      where: { id },
+      data: updateData,
+    });
+  }
+
+  async updateSubCategoryBanner(id: number, bannerUrl: string | null): Promise<SubCategoryRecord> {
+    const cleanBanner = typeof bannerUrl === "string" && bannerUrl.trim().length > 0 ? bannerUrl.trim() : null;
+    return (prisma as any).subCategory.update({
+      where: { id },
+      data: {
+        bannerUrl: cleanBanner,
+        coverImageUrl: cleanBanner, // Keep coverImageUrl in sync for existing views
+      },
+    });
+  }
+
+  async updateSubCategoryDescription(id: number, description: string | null): Promise<SubCategoryRecord> {
+    return this.updateSubCategory(id, { description });
+  }
+
+  async deleteSubCategory(id: number): Promise<SubCategoryRecord> {
+    return (prisma as any).subCategory.update({
+      where: { id },
       data: { isActive: false },
     });
   }
@@ -58,10 +217,20 @@ export class CatalogService {
     });
   }
 
-  async listActiveProducts(): Promise<ProductWithCategory[]> {
-    return prisma.product.findMany({
+  async listActiveProductsBySubCategory(subCategoryId: number): Promise<Product[]> {
+    return (prisma.product.findMany as any)({
+      where: {
+        subCategoryId,
+        isActive: true,
+        category: { isActive: true },
+      },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  async listActiveProducts(): Promise<Product[]> {
+    return (prisma.product.findMany as any)({
       where: { isActive: true, category: { isActive: true } },
-      include: { category: true },
       orderBy: { id: "asc" },
     });
   }
@@ -69,13 +238,16 @@ export class CatalogService {
   async getProduct(
     productId: number,
     activeOnly = true,
-  ): Promise<ProductWithCategory | null> {
-    return prisma.product.findFirst({
+  ): Promise<ProductWithCategoryAndSub | null> {
+    return (prisma.product.findFirst as any)({
       where: activeOnly
         ? { id: productId, isActive: true, category: { isActive: true } }
         : { id: productId },
-      include: { category: true },
-    });
+      include: {
+        category: true,
+        subCategory: true,
+      },
+    }) as Promise<ProductWithCategoryAndSub | null>;
   }
 
   requiredFieldsOf(product: Product): string[] {
@@ -91,7 +263,10 @@ export class CatalogService {
   async createProduct(input: {
     name: string;
     price: number;
+    currency?: string;
+    usdPrice?: number | null;
     categoryId: number;
+    subCategoryId?: number | null;
     deliveryType: DeliveryType;
     requiredFields?: string[];
     description?: string | null;
@@ -107,11 +282,14 @@ export class CatalogService {
         ? input.bannerFileId.trim()
         : null;
 
-    return prisma.product.create({
+    return (prisma.product.create as any)({
       data: {
         name: input.name.trim(),
         price: input.price,
+        currency: input.currency ?? "TOMAN",
+        usdPrice: input.usdPrice ?? null,
         categoryId: input.categoryId,
+        subCategoryId: input.subCategoryId ?? null,
         deliveryType: input.deliveryType,
         description,
         bannerFileId,
@@ -122,7 +300,7 @@ export class CatalogService {
   }
 
   async updateProductName(productId: number, name: string): Promise<Product> {
-    return prisma.product.update({
+    return (prisma.product.update as any)({
       where: { id: productId },
       data: { name: name.trim() },
     });
@@ -133,7 +311,7 @@ export class CatalogService {
       typeof bannerFileId === "string" && bannerFileId.trim().length > 0
         ? bannerFileId.trim()
         : null;
-    return prisma.product.update({
+    return (prisma.product.update as any)({
       where: { id: productId },
       data: { bannerFileId: value },
     });
@@ -143,7 +321,7 @@ export class CatalogService {
     productId: number,
     deliveryType: DeliveryType,
   ): Promise<Product> {
-    return prisma.product.update({
+    return (prisma.product.update as any)({
       where: { id: productId },
       data: { deliveryType },
     });
@@ -157,21 +335,53 @@ export class CatalogService {
       typeof description === "string" && description.trim().length > 0
         ? description.trim()
         : null;
-    return prisma.product.update({
+    return (prisma.product.update as any)({
       where: { id: productId },
       data: { description: value },
     });
   }
 
-  async updateProductPrice(productId: number, price: number): Promise<Product> {
-    return prisma.product.update({
+  async updateProductPrice(
+    productId: number,
+    price: number,
+    currency?: string,
+    usdPrice?: number | null,
+  ): Promise<Product> {
+    return (prisma.product.update as any)({
       where: { id: productId },
-      data: { price },
+      data: {
+        price,
+        ...(currency ? { currency } : {}),
+        usdPrice: usdPrice !== undefined ? usdPrice : undefined,
+      },
     });
   }
 
+  async updateProductSubCategory(
+    productId: number,
+    subCategoryId: number | null,
+  ): Promise<Product> {
+    return (prisma.product.update as any)({
+      where: { id: productId },
+      data: { subCategoryId },
+    });
+  }
+
+  /**
+   * Get the current effective price in Toman for customers.
+   * If the product is priced in USD, dynamically converts using the latest exchange rate.
+   */
+  async getEffectivePrice(product: Product): Promise<number> {
+    const p = product as any;
+    if (p.currency === "USD" && p.usdPrice != null && p.usdPrice > 0) {
+      const rate = await exchangeRateService.getUsdRate();
+      return convertUsdToToman(p.usdPrice, rate);
+    }
+    return Math.round(Number(product.price));
+  }
+
   async deleteProduct(productId: number): Promise<Product> {
-    return prisma.product.update({
+    return (prisma.product.update as any)({
       where: { id: productId },
       data: { isActive: false },
     });

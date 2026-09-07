@@ -182,22 +182,6 @@ export class CrmService {
 
     return lines.join("\n");
   }
-
-  /** @deprecated prefer formatAdvancedStatsMessage */
-  formatStatsMessage(stats: CrmStats): string {
-    return [
-      "📊 *آمار و CRM اشتراکینو*",
-      "",
-      `👥 کل کاربران: *${stats.totalUsers}*`,
-      `✅ فاکتورهای پرداخت شده (*PAID*): *${stats.paidInvoices}*`,
-      `⏳ در انتظار پرداخت / رسید: *${stats.pendingInvoices}*`,
-      `🔎 در انتظار تایید ادمین: *${stats.awaitingApproval}*`,
-      `❌ لغو شده (*CANCELLED*): *${stats.cancelledInvoices}*`,
-      `⌛ منقضی شده (*EXPIRED*): *${stats.expiredInvoices}*`,
-      "",
-      `💰 مجموع درآمد: *${formatToman(stats.totalRevenue)}*`,
-    ].join("\n");
-  }
 }
 
 export const crmService = new CrmService();

@@ -1,10 +1,12 @@
 import { InlineKeyboard } from "grammy";
 import { Callbacks } from "../keyboards/callbacks";
 import {
-  appendFullWidthCta,
   appendNavBar,
+  appendOneColumn,
   appendTwoColumn,
+  type KeyboardButton,
 } from "../keyboards/grid";
+import { BUTTON_CUSTOM_EMOJIS } from "../keyboards/buttonEmojis";
 
 export type WalletMethodButton = {
   id: number;
@@ -19,30 +21,49 @@ export function walletMenuKeyboard(options?: {
 }): InlineKeyboard {
   const kb = new InlineKeyboard();
   const methods = options?.methods ?? [];
-  const layoutColumns = options?.layoutColumns ?? 1;
+  const layoutColumns = options?.layoutColumns ?? 2;
 
-  const methodButtons = methods.map((m) => {
-    const icon = m.type === "GATEWAY" ? "🌐" : "💳";
-    return {
-      text: `${icon} شارژ با ${m.name}`.length > 64
-        ? `${icon} ${m.name}`.slice(0, 61) + "…"
-        : `${icon} شارژ با ${m.name}`,
-      data: Callbacks.walletCustom(m.id),
-    };
-  });
+  const actionButtons: Array<KeyboardButton> = [];
 
-  if (layoutColumns === 2 && methodButtons.length > 0) {
-    appendTwoColumn(kb, methodButtons);
-  } else {
-    for (const b of methodButtons) {
-      appendFullWidthCta(kb, b.text, b.data);
+  for (const m of methods) {
+    const isGateway = m.type === "GATEWAY";
+    if (isGateway) {
+      actionButtons.push({
+        text: `شارژ با درگاه ${m.name}`,
+        data: Callbacks.walletCustom(m.id),
+        icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BANK_GATEWAY,
+      });
+    } else {
+      const label = `شارژ با ${m.name}`;
+      actionButtons.push({
+        text:
+          label.length > 64
+            ? label.slice(0, 61) + "…"
+            : label,
+        data: Callbacks.walletCustom(m.id),
+        icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.CARD_TO_CARD,
+      });
     }
   }
 
   if (options?.swapEnabled !== false) {
-    appendFullWidthCta(kb, "💎 شارژ با کریپتو (SwapWallet)", Callbacks.walletSwapDeposit);
+    actionButtons.push({
+      text: "شارژ با کریپتو (SwapWallet)",
+      data: Callbacks.walletSwapDeposit,
+      icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.CRYPTO,
+    });
   }
 
-  appendNavBar(kb, { text: "🔙 بازگشت", data: Callbacks.mainMenu });
+  if (layoutColumns === 2 && actionButtons.length > 0) {
+    appendTwoColumn(kb, actionButtons);
+  } else if (actionButtons.length > 0) {
+    appendOneColumn(kb, actionButtons);
+  }
+
+  appendNavBar(kb, {
+    text: "بازگشت",
+    data: Callbacks.mainMenu,
+    icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
+  });
   return kb;
 }
