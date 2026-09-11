@@ -48,6 +48,7 @@ export const Callbacks = {
   adminDiscountsRefresh: "admin_discounts:refresh",
   applyDiscount: (invoiceId: number) => `discount:apply:${invoiceId}`,
   adminCatalog: "adm:cat",
+  adminStarsRate: "adm:cat:stars_rate",
   adminSubCategories: "adm:subcat",
   adminAddSubCategory: "adm:subcat:add",
   adminEditSubCategoryMenu: "adm:subcat:editm",
@@ -86,6 +87,9 @@ export const Callbacks = {
   adminSetSwapApiKey: "adm:set_swap_api_key",
   adminSetSwapWalletAddress: "adm:set_swap_wallet",
   adminToggleSwapPay: "adm:swap:tog",
+  adminSuppliers: "adm:suppliers",
+  adminAddSupplierKey: "adm:sup:addkey",
+  adminMapSupplier: "adm:sup:map",
 
   // User management — interactive list
   /** Opens list at last session page, or all:0 */

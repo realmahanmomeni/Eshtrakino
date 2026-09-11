@@ -10,6 +10,19 @@ export async function adminOnlyMiddleware(
     return next();
   }
 
+  // Never intercept public commands or customer flows
+  const text = ctx.message?.text?.trim();
+  if (
+    text &&
+    (text.startsWith("/start") ||
+      text.startsWith("/shop") ||
+      text.startsWith("/account") ||
+      text.startsWith("/support") ||
+      text.startsWith("/cancel"))
+  ) {
+    return next();
+  }
+
   if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery({

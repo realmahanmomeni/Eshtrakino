@@ -110,7 +110,12 @@ function truncateLabel(name: string, max = 40): string {
  * The button icon itself uses the Star Premium custom emoji (icon_custom_emoji_id).
  */
 function cleanProductLabel(name: string): string {
-  return name.replace(/[🎟🎫]/g, "").replace(/\s+/g, " ").trim();
+  return name
+    .replace(/[🎟🎫]/g, "")
+    .replace(/\s*[-—–]\s*[\d,۰-۹٠-٩]+\s*(?:تومان|toman)?/gi, "")
+    .replace(/\s*\([\d,۰-۹٠-٩]+\s*(?:تومان|toman)?\)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function categoryContentsKeyboard(
@@ -181,7 +186,7 @@ export function subCategoriesKeyboard(
 }
 
 export function servicePlansKeyboard(
-  products: Array<{ id: number; name: string; formattedPrice: string }>,
+  products: Array<{ id: number; name: string; formattedPrice?: string }>,
   categoryId: number,
   categoryName?: string,
 ): InlineKeyboard {
@@ -189,7 +194,7 @@ export function servicePlansKeyboard(
   for (const p of products) {
     const customEmojiId = getProductCustomEmojiId(p.name);
     const namePart = truncateLabel(cleanProductLabel(p.name), 35);
-    const label = `${namePart} — ${p.formattedPrice}`;
+    const label = namePart;
     appendFullWidthCta(
       kb,
       label.length > 64 ? `${label.slice(0, 61)}…` : label,

@@ -153,6 +153,9 @@ export async function adminSearchUserConversation(
       }
 
       const raw = (update.message?.text ?? "").trim();
+      if (raw === "/start" || raw.startsWith("/start ")) {
+        return;
+      }
       if (raw === "/cancel") {
         await showUsersListPanel(conversation, update, panel);
         return;

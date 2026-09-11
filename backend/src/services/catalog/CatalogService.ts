@@ -53,8 +53,21 @@ export class CatalogService {
   }
 
   async createCategory(name: string): Promise<Category> {
+    const trimmed = name.trim();
+    const existing = await prisma.category.findFirst({
+      where: { name: trimmed },
+    });
+    if (existing) {
+      if (!existing.isActive) {
+        return prisma.category.update({
+          where: { id: existing.id },
+          data: { isActive: true },
+        });
+      }
+      return existing;
+    }
     return prisma.category.create({
-      data: { name: name.trim(), isActive: true },
+      data: { name: trimmed, isActive: true },
     });
   }
 
@@ -132,9 +145,28 @@ export class CatalogService {
         ? data.coverImageUrl.trim()
         : null;
 
+    const trimmedName = data.name.trim();
+    const existing = await (prisma as any).subCategory.findFirst({
+      where: {
+        name: trimmedName,
+        categoryId: data.categoryId,
+      },
+    });
+    if (existing) {
+      return (prisma as any).subCategory.update({
+        where: { id: existing.id },
+        data: {
+          isActive: true,
+          description: description ?? existing.description,
+          coverImageUrl: coverImageUrl ?? existing.coverImageUrl,
+          sortOrder: data.sortOrder ?? existing.sortOrder,
+        },
+      });
+    }
+
     return (prisma as any).subCategory.create({
       data: {
-        name: data.name.trim(),
+        name: trimmedName,
         categoryId: data.categoryId,
         description,
         coverImageUrl,
@@ -282,9 +314,33 @@ export class CatalogService {
         ? input.bannerFileId.trim()
         : null;
 
+    const trimmedName = input.name.trim();
+    const existing = await prisma.product.findFirst({
+      where: {
+        name: trimmedName,
+        categoryId: input.categoryId,
+      },
+    });
+    if (existing) {
+      return (prisma.product.update as any)({
+        where: { id: existing.id },
+        data: {
+          price: input.price,
+          currency: input.currency ?? existing.currency,
+          usdPrice: input.usdPrice !== undefined ? input.usdPrice : (existing as any).usdPrice,
+          subCategoryId: input.subCategoryId !== undefined ? input.subCategoryId : existing.subCategoryId,
+          deliveryType: input.deliveryType,
+          description: description ?? existing.description,
+          bannerFileId: bannerFileId ?? existing.bannerFileId,
+          requiredFields: (input.requiredFields ?? existing.requiredFields) as Prisma.InputJsonValue,
+          isActive: true,
+        },
+      });
+    }
+
     return (prisma.product.create as any)({
       data: {
-        name: input.name.trim(),
+        name: trimmedName,
         price: input.price,
         currency: input.currency ?? "TOMAN",
         usdPrice: input.usdPrice ?? null,
@@ -389,3 +445,10 @@ export class CatalogService {
 }
 
 export const catalogService = new CatalogService();
+
+export {
+  starsPricingService,
+  recalculateStarsProducts,
+  extractStarCount,
+  isStarsCatalog,
+} from "./starsPricingService";

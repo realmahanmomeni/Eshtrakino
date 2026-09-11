@@ -21,6 +21,13 @@ export const FORCE_JOIN_INVITE_LINK = "FORCE_JOIN_INVITE_LINK";
 export const FORCE_JOIN_TEXT = "FORCE_JOIN_TEXT";
 /** Last known USDT/USD to Toman exchange rate fallback */
 export const LAST_EXCHANGE_RATE_KEY = "LAST_EXCHANGE_RATE_USDT_TOMAN";
+/** Telegram Stars base unit price in USD (per 1 Star) */
+export const STARS_UNIT_USD_PRICE_KEY = "STARS_UNIT_USD_PRICE";
+export const DEFAULT_STARS_UNIT_USD_PRICE = 0.0171;
+/** Flag indicating initial catalog bootstrap is completed and database is sole authority */
+export const CATALOG_BOOTSTRAP_DONE_KEY = "CATALOG_BOOTSTRAP_DONE";
+/** Flag indicating one-time migration for ChatGPT dedicated SubCategory is done */
+export const CHATGPT_SUBCAT_MIGRATED_KEY = "CHATGPT_SUBCAT_MIGRATED";
 
 export class SettingsService {
   async getSetting(key: string): Promise<string | null> {

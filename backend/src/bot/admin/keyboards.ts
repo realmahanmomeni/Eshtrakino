@@ -13,12 +13,15 @@ export const ConvCb = {
   cancel: "conv:cancel",
   skipPhoto: "conv:skip:photo",
   category: (id: number) => `conv:cat:${id}`,
-  delivery: (type: "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "USER_CHOICE") =>
-    `conv:del:${type}`,
-  deliveryAdd: (type: "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "USER_CHOICE") =>
-    `conv:deladd:${type}`,
-  deliveryEdit: (type: "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "USER_CHOICE") =>
-    `conv:deledit:${type}`,
+  delivery: (
+    type: "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "USER_CHOICE" | "SUPPLIER_AUTO",
+  ) => `conv:del:${type}`,
+  deliveryAdd: (
+    type: "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "USER_CHOICE" | "SUPPLIER_AUTO",
+  ) => `conv:deladd:${type}`,
+  deliveryEdit: (
+    type: "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "USER_CHOICE" | "SUPPLIER_AUTO",
+  ) => `conv:deledit:${type}`,
   payType: (type: "CARD" | "GATEWAY") => `conv:ptype:${type}`,
   editProductName: "conv:prd:edit:name",
   editProductPrice: "conv:prd:edit:price",
@@ -67,6 +70,7 @@ export function adminHomeKeyboard(): InlineKeyboard {
     { text: "🖼️ مدیریت صفحات", data: "adm:cms_menu" },
     { text: "👥 مدیریت کاربران", data: Callbacks.adminUsers },
     { text: "🧾 مدیریت رسیدها", data: Callbacks.adminReceipts },
+    { text: "🔗 تامین‌کنندگان", data: "adm:suppliers" },
     { text: "💾 مدیریت بکاپ", data: Callbacks.adminBackupMenu },
     { text: "📢 قفل کانال", data: "adm:force_join" },
     { text: "⚙️ تنظیم گروه لاگ", data: Callbacks.adminSetLogGroup },
@@ -468,6 +472,8 @@ export function adminCatalogKeyboard(): InlineKeyboard {
     .row()
     .text("📑 مدیریت سرویس‌ها (زیردسته‌ها)", Callbacks.adminSubCategories)
     .row()
+    .text("⭐ تنظیم نرخ واحد استارز", Callbacks.adminStarsRate)
+    .row()
     .text("➕ افزودن محصول", Callbacks.adminAddProduct)
     .text("✏️ ویرایش محصول", Callbacks.adminEditProductMenu)
     .row()
@@ -630,7 +636,7 @@ export function adminProductPickKeyboard(
   return kb;
 }
 
-export function convProductEditKeyboard(
+export function adminProductDetailKeyboard(
   product: Pick<Product, "id" | "deliveryType">,
 ): InlineKeyboard {
   const kb = new InlineKeyboard()
@@ -642,8 +648,8 @@ export function convProductEditKeyboard(
     .text("📝 ویرایش توضیحات (کپشن)", ConvCb.editProductDesc)
     .text("🖼 ویرایش بنر محصول", ConvCb.editProductBanner)
     .row()
-    // Row 3: Delivery type and SubCategory/Service
-    .text("🚚 ویرایش نوع تحویل", ConvCb.editProductDelivery)
+    // Row 3: Delivery type switcher and SubCategory/Service
+    .text("🔄 تغییر نوع تحویل", `adm:prod:toggle_delivery:${product.id}`)
     .text("📑 ویرایش سرویس / زیردسته", ConvCb.editProductSubCategory)
     .row()
     // Row 4: Stock alert and Duration
@@ -666,6 +672,8 @@ export function convProductEditKeyboard(
   return kb;
 }
 
+export const convProductEditKeyboard = adminProductDetailKeyboard;
+
 export function convProductDurationKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("۱ ماهه (۳۰ روز)", ConvCb.durationPreset(30))
@@ -679,13 +687,26 @@ export function convProductDurationKeyboard(): InlineKeyboard {
     .text("❌ لغو", ConvCb.cancel);
 }
 
+export function adminDeliveryTypeSwitchKeyboard(productId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🤖 کوانتوم بات", `adm:prod:set_delivery:${productId}:SUPPLIER_AUTO`)
+    .row()
+    .text("✋ تحویل دستی", `adm:prod:set_delivery:${productId}:MANUAL`)
+    .row()
+    .text("⚙️ تحویل سفارشی", `adm:prod:set_delivery:${productId}:CREDENTIALS_REQUIRED`)
+    .row()
+    .text("🔙 بازگشت", `adm:prd:edit:${productId}`);
+}
+
 export function convDeliveryTypeEditKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("📦 موجودی آماده", ConvCb.deliveryEdit("READY"))
+    .text("🤖 کوانتوم بات", ConvCb.deliveryEdit("SUPPLIER_AUTO"))
+    .row()
     .text("✋ تحویل دستی", ConvCb.deliveryEdit("MANUAL"))
     .row()
-    .text("🔐 نیاز به اطلاعات اکانت", ConvCb.deliveryEdit("CREDENTIALS_REQUIRED"))
+    .text("⚙️ تحویل سفارشی", ConvCb.deliveryEdit("CREDENTIALS_REQUIRED"))
     .row()
+    .text("📦 موجودی آماده", ConvCb.deliveryEdit("READY"))
     .text("🔀 انتخاب توسط کاربر (آنی/شخصی)", ConvCb.deliveryEdit("USER_CHOICE"))
     .row()
     .text("❌ لغو", ConvCb.cancel);
@@ -766,3 +787,15 @@ export function convPaymentTypeKeyboard(): InlineKeyboard {
     .row()
     .text("❌ لغو", ConvCb.cancel);
 }
+
+export function adminSuppliersKeyboard(): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  kb.text("➕ افزودن کلید تامین‌کننده (API Key)", "adm:sup:addkey").row();
+  kb.text("🔄 تنظیم نگاشت محصولات (Mapping)", "adm:sup:map").row();
+  appendNavBar(kb, {
+    text: "🔙 بازگشت به پنل",
+    data: Callbacks.adminHome,
+  });
+  return kb;
+}
+

@@ -6,7 +6,7 @@ export const BUTTON_CUSTOM_EMOJIS = {
   CHATGPT: "5188653289108949659",
   GEMINI: "5188334830168853961",
   TELEGRAM_STARS: "5287479631891420667",
-  TELEGRAM_PREMIUM: "5454365533979825405",
+  TELEGRAM_PREMIUM: "5456135459937733007",
 
   // Generic Product fallback
   PRODUCT: "5983591923883972553",
@@ -51,7 +51,13 @@ export function getProductCustomEmojiId(productName: string): string {
   const norm = productName.toLowerCase().trim();
 
   // 1. ChatGPT and all ChatGPT-related products
-  if (/\bchatgpt\b/i.test(norm) || /chat\s*gpt/i.test(norm)) {
+  if (
+    /\bchatgpt\b/i.test(norm) ||
+    /chat\s*gpt/i.test(norm) ||
+    /چت\s*جی\s*پی\s*تی/i.test(norm) ||
+    /چت\s*جیپیتی/i.test(norm) ||
+    /چت\s*جی\s*پیتی/i.test(norm)
+  ) {
     return BUTTON_CUSTOM_EMOJIS.CHATGPT;
   }
 
@@ -86,10 +92,10 @@ export function getProductCustomEmojiId(productName: string): string {
   if (
     /telegram\s+premium/i.test(norm) ||
     /premium\s+telegram/i.test(norm) ||
-    /تلگرام\s+پرمیوم/i.test(norm) ||
-    /تلگرام\s+پریمیوم/i.test(norm) ||
-    /پرمیوم\s+تلگرام/i.test(norm) ||
-    /پریمیوم\s+تلگرام/i.test(norm)
+    /تلگرام\s*پری?م[ی]?وم/i.test(norm) ||
+    /پری?م[ی]?وم\s*تلگرام/i.test(norm) ||
+    /پری?م[ی]?وم/i.test(norm) ||
+    /premium/i.test(norm)
   ) {
     return BUTTON_CUSTOM_EMOJIS.TELEGRAM_PREMIUM;
   }
@@ -128,6 +134,7 @@ export function getCategoryCustomEmojiId(categoryName: string): string {
     /stars?\s+(?:of\s+)?(?:telegram|تلگرام)/i.test(norm) ||
     /تلگرام\s+استار(?:ز)?/i.test(norm) ||
     /استار(?:ز)?\s*(?:های\s*)?تلگرام/i.test(norm) ||
+    /استار(?:ز)?\s*تلگرام/i.test(norm) ||
     /\b(?:telegram\s+stars?|تلگرام\s+استارز?)\b/i.test(norm) ||
     /^telegram\s+stars?$/i.test(norm) ||
     /^stars?$/i.test(norm) ||
@@ -140,10 +147,10 @@ export function getCategoryCustomEmojiId(categoryName: string): string {
   if (
     /telegram\s+premium/i.test(norm) ||
     /premium\s+telegram/i.test(norm) ||
-    /تلگرام\s+پرمیوم/i.test(norm) ||
-    /تلگرام\s+پریمیوم/i.test(norm) ||
-    /پرمیوم\s+تلگرام/i.test(norm) ||
-    /پریمیوم\s+تلگرام/i.test(norm)
+    /تلگرام\s*پری?م[ی]?وم/i.test(norm) ||
+    /پری?م[ی]?وم\s*تلگرام/i.test(norm) ||
+    /پری?م[ی]?وم/i.test(norm) ||
+    /premium/i.test(norm)
   ) {
     return BUTTON_CUSTOM_EMOJIS.TELEGRAM_PREMIUM;
   }
@@ -154,7 +161,13 @@ export function getCategoryCustomEmojiId(categoryName: string): string {
   }
 
   // 5. ChatGPT SubCategory / Service
-  if (/\bchatgpt\b/i.test(norm) || /chat\s*gpt/i.test(norm) || /چت\s*جی\s*پی\s*تی/i.test(norm)) {
+  if (
+    /\bchatgpt\b/i.test(norm) ||
+    /chat\s*gpt/i.test(norm) ||
+    /چت\s*جی\s*پی\s*تی/i.test(norm) ||
+    /چت\s*جیپیتی/i.test(norm) ||
+    /چت\s*جی\s*پیتی/i.test(norm)
+  ) {
     return BUTTON_CUSTOM_EMOJIS.CHATGPT;
   }
 
@@ -174,7 +187,13 @@ export function getSubCategoryCustomEmojiId(subCategoryName: string): string {
   }
 
   // 2. ChatGPT
-  if (/\bchatgpt\b/i.test(norm) || /chat\s*gpt/i.test(norm) || /چت\s*جی\s*پی\s*تی/i.test(norm)) {
+  if (
+    /\bchatgpt\b/i.test(norm) ||
+    /chat\s*gpt/i.test(norm) ||
+    /چت\s*جی\s*پی\s*تی/i.test(norm) ||
+    /چت\s*جیپیتی/i.test(norm) ||
+    /چت\s*جی\s*پیتی/i.test(norm)
+  ) {
     return BUTTON_CUSTOM_EMOJIS.CHATGPT;
   }
 
@@ -184,6 +203,7 @@ export function getSubCategoryCustomEmojiId(subCategoryName: string): string {
     /stars?\s+(?:of\s+)?(?:telegram|تلگرام)/i.test(norm) ||
     /تلگرام\s+استار(?:ز)?/i.test(norm) ||
     /استار(?:ز)?\s*(?:های\s*)?تلگرام/i.test(norm) ||
+    /استار(?:ز)?\s*تلگرام/i.test(norm) ||
     /\b(?:telegram\s+stars?|تلگرام\s+استارز?)\b/i.test(norm) ||
     /^telegram\s+stars?$/i.test(norm) ||
     /^stars?$/i.test(norm) ||
@@ -196,10 +216,10 @@ export function getSubCategoryCustomEmojiId(subCategoryName: string): string {
   if (
     /telegram\s+premium/i.test(norm) ||
     /premium\s+telegram/i.test(norm) ||
-    /تلگرام\s+پرمیوم/i.test(norm) ||
-    /تلگرام\s+پریمیوم/i.test(norm) ||
-    /پرمیوم\s+تلگرام/i.test(norm) ||
-    /پریمیوم\s+تلگرام/i.test(norm)
+    /تلگرام\s*پری?م[ی]?وم/i.test(norm) ||
+    /پری?م[ی]?وم\s*تلگرام/i.test(norm) ||
+    /پری?م[ی]?وم/i.test(norm) ||
+    /premium/i.test(norm)
   ) {
     return BUTTON_CUSTOM_EMOJIS.TELEGRAM_PREMIUM;
   }

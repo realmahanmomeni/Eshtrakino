@@ -2,6 +2,8 @@ import { createConversation } from "@grammyjs/conversations";
 import { type Bot } from "grammy";
 import type { BotContext } from "../context";
 import { catalogService } from "../../services/catalog/CatalogService";
+import { starsPricingService, isStarsCatalog } from "../../services/catalog/starsPricingService";
+import { exchangeRateService } from "../../services/exchangeRateService";
 import { invoiceService, buildPriceUpdateNotice } from "../../services/invoices/InvoiceService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
 import { groupLogger } from "../../services/logger/GroupLogger";
@@ -254,7 +256,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       "👇 برای ادامه، دکمه خرید را بزنید:",
     ].join("\n");
 
-    const media = product.bannerFileId?.trim() || BannerAssets.category;
+    const fallbackBanner =
+      product.subCategory?.bannerUrl?.trim() ||
+      product.subCategory?.coverImageUrl?.trim() ||
+      product.category?.bannerUrl?.trim() ||
+      BannerAssets.category;
+    const media = product.bannerFileId?.trim() || fallbackBanner;
     const kb = productDetailKeyboard(
       product.id,
       product.categoryId,
@@ -317,24 +324,45 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       BannerAssets.category;
 
     const desc = subCategory.description?.trim();
-    const caption = [
-      `✨ *${subCategory.name}*`,
-      ...(desc ? ["", `📝 ${desc}`] : []),
-      "",
-      planProducts.length === 0
-        ? "فعلا پلن فعالی برای این سرویس وجود ندارد."
-        : "برای خرید، پلن مورد نظر خود را انتخاب کنید:",
-    ].join("\n");
+    const isStars = isStarsCatalog(subCategory.name) || isStarsCatalog(categoryName);
+    let starsRateLine = "";
+    if (isStars) {
+      const unitUsdPrice = await starsPricingService.getStarsUnitUsdPrice();
+      const usdRate = await exchangeRateService.getUsdToTomanRate();
+      const oneStarToman = Math.round(unitUsdPrice * usdRate);
+      const formattedToman = oneStarToman.toLocaleString("en-US");
+      starsRateLine = `⭐️ قیمت هر ۱ عدد استارز امروز: <b>${formattedToman} تومان</b>`;
+    }
+
+    const caption = isStars
+      ? [
+          `✨ <b>${subCategory.name}</b>`,
+          ...(desc ? ["", `📝 ${desc}`] : []),
+          ...(starsRateLine ? ["", starsRateLine] : []),
+          "",
+          planProducts.length === 0
+            ? "فعلا پلن فعالی برای این سرویس وجود ندارد."
+            : "برای خرید، پلن مورد نظر خود را انتخاب کنید:",
+        ].join("\n")
+      : [
+          `✨ *${subCategory.name}*`,
+          ...(desc ? ["", `📝 ${desc}`] : []),
+          "",
+          planProducts.length === 0
+            ? "فعلا پلن فعالی برای این سرویس وجود ندارد."
+            : "برای خرید، پلن مورد نظر خود را انتخاب کنید:",
+        ].join("\n");
 
     const kb = servicePlansKeyboard(planProducts, subCategory.categoryId, categoryName);
+    const parse_mode = isStars ? "HTML" : "Markdown";
 
     if (!forceReply && ctx.callbackQuery) {
-      await safeEditMedia(ctx, subBanner, caption, kb);
+      await safeEditMedia(ctx, subBanner, caption, kb, "photo", { parse_mode });
     } else {
       try {
         await ctx.replyWithPhoto(subBanner, {
           caption,
-          parse_mode: "Markdown",
+          parse_mode,
           reply_markup: kb,
         });
         return;
@@ -342,13 +370,22 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         /* fallback to text */
       }
       await ctx.reply(caption, {
-        parse_mode: "Markdown",
+        parse_mode,
         reply_markup: kb,
       });
     }
   }
 
   bot.command("start", async (ctx) => {
+    try {
+      if (ctx.conversation) {
+        if (typeof ctx.conversation.exitAll === "function") {
+          await ctx.conversation.exitAll();
+        } else if (typeof (ctx.conversation as any).exit === "function") {
+          await (ctx.conversation as any).exit();
+        }
+      }
+    } catch {}
     const user = await invoiceService.ensureUser(BigInt(ctx.from!.id));
     const startPayload = ctx.match?.trim() || "";
     const referrerId =
@@ -530,6 +567,18 @@ export function registerHandlers(bot: Bot<BotContext>): void {
 
     const catBanner = (category as any).bannerUrl?.trim() || BannerAssets.category;
     const desc = (category as any).description?.trim();
+    const isStars = isStarsCatalog(category.name);
+    let starsRateLine = "";
+    if (isStars) {
+      const unitUsdPrice = await starsPricingService.getStarsUnitUsdPrice();
+      const usdRate = await exchangeRateService.getUsdToTomanRate();
+      const oneStarToman = Math.round(unitUsdPrice * usdRate);
+      const formattedToman = oneStarToman.toLocaleString("en-US");
+      starsRateLine = `⭐️ قیمت هر ۱ عدد استارز امروز: <b>${formattedToman} تومان</b>`;
+    }
+
+    const title = isStars ? `✨ <b>${category.name}</b>` : `${emojiForLabel(category.name)} *${category.name}*`;
+    const parse_mode = isStars ? "HTML" : "Markdown";
 
     if (subCategories.length === 0 && standaloneProducts.length === 0) {
       const shopPage = await pageContentService.getPage("shop");
@@ -537,8 +586,9 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         ctx,
         catBanner,
         [
-          `${emojiForLabel(category.name)} *${category.name}*`,
+          title,
           ...(desc ? ["", `📝 ${desc}`] : []),
+          ...(starsRateLine ? ["", starsRateLine] : []),
           "",
           "فعلا محصول یا سرویس فعالی در این دسته وجود ندارد.",
         ].join("\n"),
@@ -546,14 +596,17 @@ export function registerHandlers(bot: Bot<BotContext>): void {
           await catalogService.listActiveCategories(),
           shopPage.layoutColumns,
         ),
+        "photo",
+        { parse_mode },
       );
       return;
     }
 
     const shopPage = await pageContentService.getPage("shop");
     const caption = [
-      `${emojiForLabel(category.name)} *${category.name}*`,
+      title,
       ...(desc ? ["", `📝 ${desc}`] : []),
+      ...(starsRateLine ? ["", starsRateLine] : []),
       "",
       subCategories.length > 0
         ? "سرویس یا محصول مورد نظر را انتخاب کنید:"
@@ -568,6 +621,8 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         hasPendingInvoice: Boolean(pending),
         layoutColumns: shopPage.layoutColumns,
       }),
+      "photo",
+      { parse_mode },
     );
   });
 

@@ -13,13 +13,12 @@ export const rbacAdmin = new Composer<BotContext>();
 
 // Super Admin only guard for RBAC management
 rbacAdmin.use(async (ctx, next) => {
-  if (!ctx.from) return;
-  // Only super admins from ENV can manage RBAC
-  if (!isAdminTelegramId(ctx.from.id)) {
-    if (ctx.callbackQuery && ctx.callbackQuery.data && ctx.callbackQuery.data.startsWith("adm:rbac")) {
-      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز: فقط سوپر ادمین", show_alert: true });
-      return;
-    }
+  if (!ctx.callbackQuery?.data?.startsWith("adm:rbac")) {
+    return next();
+  }
+  if (!ctx.from || !isAdminTelegramId(ctx.from.id)) {
+    await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز: فقط سوپر ادمین", show_alert: true });
+    return;
   }
   await next();
 });

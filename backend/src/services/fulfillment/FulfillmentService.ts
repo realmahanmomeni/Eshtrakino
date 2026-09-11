@@ -11,9 +11,9 @@ import { discountService } from "../discount/DiscountService";
 function resolveFulfillmentType(
   productDeliveryType: DeliveryType,
   deliveryPreference: string | null | undefined,
-): "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" {
+): "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "SUPPLIER_AUTO" {
   if (productDeliveryType !== DeliveryType.USER_CHOICE) {
-    return productDeliveryType as "READY" | "MANUAL" | "CREDENTIALS_REQUIRED";
+    return productDeliveryType as "READY" | "MANUAL" | "CREDENTIALS_REQUIRED" | "SUPPLIER_AUTO";
   }
 
   if (deliveryPreference === "READY") return DeliveryType.READY;
@@ -85,6 +85,37 @@ export class FulfillmentService {
         await groupLogger
           .logOutOfStock(api, invoice.product.name, invoice.id)
           .catch(console.error);
+      }
+      return;
+    }
+
+    if (deliveryType === DeliveryType.SUPPLIER_AUTO) {
+      try {
+        const { supplierManager } = await import("../suppliers/index.js");
+        const success = await supplierManager.processAutoPurchase(invoice.id, invoice.productId!);
+        
+        if (success) {
+          await api.sendMessage(
+            tgId,
+            [
+              "✅ پرداخت و سفارش اتوماتیک شما با موفقیت انجام شد.",
+              "اطلاعات محصول به زودی برای شما ارسال خواهد شد."
+            ].join("\n"),
+            { parse_mode: "Markdown" },
+          );
+        } else {
+           await api.sendMessage(
+            tgId,
+            "✅ پرداخت شما تایید شد اما متاسفانه تامین کننده در حال حاضر غیرفعال است. ادمین به زودی سفارش شما را تحویل خواهد داد.",
+          );
+        }
+      } catch (error: any) {
+        console.error("Supplier Auto-Purchase Failed:", error);
+        await api.sendMessage(
+          tgId,
+          "✅ پرداخت شما تایید شد اما در تحویل اتوماتیک مشکلی پیش آمد. ادمین وضعیت سفارش شما را بررسی خواهد کرد.",
+        );
+        await groupLogger.logError(api, `⚠️ Supplier auto-purchase failed for invoice #${invoice.id}`, error);
       }
       return;
     }

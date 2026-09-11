@@ -4,9 +4,9 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-COPY prisma ./prisma/
-
 RUN npm ci
+
+COPY prisma ./prisma/
 RUN npx prisma generate
 
 COPY tsconfig.json ./
@@ -25,12 +25,13 @@ ENV BOT_HEALTH_PORT=3100
 RUN apk add --no-cache wget postgresql-client
 
 COPY package.json package-lock.json ./
-COPY prisma ./prisma/
 
 # Install production deps + prisma CLI (needed for migrate deploy)
 RUN npm ci --omit=dev \
-  && npm install prisma@6.19.3 --no-save \
-  && npx prisma generate
+  && npm install prisma@6.19.3 --no-save
+
+COPY prisma ./prisma/
+RUN npx prisma generate
 
 COPY --from=builder /app/dist ./dist
 COPY prisma/seed.mjs ./prisma/seed.mjs

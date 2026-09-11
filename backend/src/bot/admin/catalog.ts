@@ -17,6 +17,8 @@ import {
 } from "../conversations/wait";
 import { InlineKeyboard } from "grammy";
 import { exchangeRateService, convertUsdToToman } from "../../services/exchangeRateService";
+import { Callbacks } from "../keyboards/callbacks";
+import { starsPricingService, normalizeNumerals } from "../../services/catalog/starsPricingService";
 import {
   adminCatalogKeyboard,
   adminSubCategoriesKeyboard,
@@ -30,9 +32,58 @@ import {
   convSubCategoryEditKeyboard,
   convDeliveryTypeEditKeyboard,
   convProductDurationKeyboard,
+  adminProductDetailKeyboard,
   convProductEditKeyboard,
   ConvCb,
 } from "./keyboards";
+
+export function getDeliveryModeCaption(deliveryType: string): string {
+  let modeLabel = deliveryTypeLabel(deliveryType);
+  if (deliveryType === "SUPPLIER_AUTO") {
+    modeLabel = "کوانتوم بات 🤖";
+  } else if (deliveryType === "MANUAL") {
+    modeLabel = "تحویل دستی ✋";
+  } else if (deliveryType === "CREDENTIALS_REQUIRED") {
+    modeLabel = "تحویل سفارشی ⚙️";
+  }
+  return `📦 نوع تحویل: [ ${modeLabel} ]`;
+}
+
+export function renderAdminProductCardText(
+  product: any,
+  stockCount?: number | null,
+): string {
+  const durationLine =
+    product.durationDays != null
+      ? `⏱ مدت اشتراک: *${product.durationDays}* روز`
+      : "⏱ مدت اشتراک: *تنظیم نشده*";
+
+  const subCatLine = product.subCategory?.name
+    ? `📑 سرویس: *${product.subCategory.name}*`
+    : "📑 سرویس: *تنظیم نشده (بدون سرویس)*";
+
+  const prod = product as typeof product & { currency?: string; usdPrice?: number | null };
+  const priceLine =
+    prod.currency === "USD" && prod.usdPrice != null
+      ? `💵 قیمت: *${formatToman(product.price)}* ($${prod.usdPrice})`
+      : `💵 قیمت: *${formatToman(product.price)}*`;
+
+  const stockLine =
+    stockCount != null ? `\n📦 موجودی فعلی انبار: *${stockCount}*` : "";
+
+  return [
+    "✏️ *ویرایش محصول*",
+    "",
+    `📦 محصول: *${product.name}*`,
+    subCatLine,
+    priceLine,
+    getDeliveryModeCaption(product.deliveryType),
+    durationLine,
+    `⚠️ آستانه موجودی: *${product.lowStockThreshold}*${stockLine}`,
+    "",
+    "کدام بخش را می خواهید ویرایش کنید؟",
+  ].join("\n");
+}
 
 const cancelOnlyKeyboard = {
   inline_keyboard: [[{ text: "❌ لغو", callback_data: ConvCb.cancel }]],
@@ -759,20 +810,8 @@ export async function editProductConversation(
       const menu = await waitCallbackOnPanel(
         conversation,
         ctx,
-        [
-          "✏️ *ویرایش محصول*",
-          "",
-          `📦 محصول: *${product.name}*`,
-          subCatLine,
-          priceLine,
-          `🚚 نوع تحویل: *${deliveryTypeLabel(product.deliveryType)}*`,
-          durationLine,
-          `⚠️ آستانه موجودی: *${product.lowStockThreshold}*`,
-          ...(stockLine ? [stockLine] : []),
-          "",
-          "کدام بخش را می خواهید ویرایش کنید؟",
-        ].join("\n"),
-        convProductEditKeyboard(product),
+        renderAdminProductCardText(product, stockCount),
+        adminProductDetailKeyboard(product),
         panel,
       );
       panel = menu.panel;
@@ -895,14 +934,19 @@ export async function editProductConversation(
         continue;
       }
 
-      if (action === ConvCb.editProductDelivery) {
+      if (
+        action === ConvCb.editProductDelivery ||
+        action === `adm:prod:toggle_delivery:${productId}` ||
+        action?.startsWith("adm:prod:toggle_delivery:")
+      ) {
         const del = await waitCallbackOnPanel(
           conversation,
           ctx,
           [
-            "🚚 *ویرایش نوع تحویل*",
+            "🔄 *تغییر نوع تحویل محصول*",
             "",
-            `نوع فعلی: *${deliveryTypeLabel(product.deliveryType)}*`,
+            `📦 محصول: *${product.name}*`,
+            getDeliveryModeCaption(product.deliveryType),
             "",
             "نوع تحویل جدید را انتخاب کنید:",
           ].join("\n"),
@@ -914,7 +958,9 @@ export async function editProductConversation(
           continue;
         }
         const delMatch =
-          /^conv:deledit:(READY|MANUAL|CREDENTIALS_REQUIRED|USER_CHOICE)$/.exec(del.data);
+          /^(?:conv:deledit|adm:prod:set_delivery:\d+):(READY|MANUAL|CREDENTIALS_REQUIRED|USER_CHOICE|SUPPLIER_AUTO)$/.exec(
+            del.data,
+          );
         if (!delMatch) {
           await ensurePanel(ctx, "انتخاب نامعتبر بود.", emptyKeyboard, panel);
           continue;
@@ -928,7 +974,7 @@ export async function editProductConversation(
           [
             "✅ *نوع تحویل به روز شد*",
             "",
-            `🚚 نوع جدید: *${deliveryTypeLabel(deliveryType)}*`,
+            getDeliveryModeCaption(deliveryType),
           ].join("\n"),
           emptyKeyboard,
           panel,
@@ -1354,6 +1400,100 @@ export async function editSubCategoryConversation(
     console.error("editSubCategoryConversation error:", err);
     await ctx.reply("⚠️ خطا در ویرایش سرویس.", {
       reply_markup: adminSubCategoriesKeyboard(),
+    });
+  }
+}
+
+/**
+ * Conversation for admin to update the base USD rate for 1 Telegram Star.
+ * Automatically recalculates and updates all Stars products in the database.
+ */
+export async function setStarsRateConversation(
+  conversation: EshtrakinoConversation,
+  ctx: SessionContext,
+): Promise<void> {
+  try {
+    const currentRate = await conversation.external(async () => {
+      return await starsPricingService.getStarsUnitUsdPrice();
+    });
+    const currentUsdRate = await conversation.external(async () => {
+      return await exchangeRateService.getUsdToTomanRate();
+    });
+
+    let panel: PanelRef | null = panelFromCtx(ctx);
+    let prompt = [
+      "⭐ <b>تنظیم نرخ واحد استارز تلگرام</b>",
+      "",
+      `💵 نرخ فعلی هر ۱ استارز: <code>${currentRate} USD</code>`,
+      `💱 نرخ فعلی دلار: <code>${formatToman(currentUsdRate)}</code>`,
+      "",
+      "لطفاً نرخ جدید دلاری برای هر ۱ عدد استارز را وارد کنید:",
+      "<i>(مثال: 0.0175 یا 0.0171)</i>",
+    ].join("\n");
+
+    while (true) {
+      const waited = await waitTextOnPanel(conversation, ctx, prompt, panel, {
+        parse_mode: "HTML",
+      });
+      panel = waited.panel;
+      if (!waited.text) {
+        // Canceled or exit command
+        return;
+      }
+
+      const cleaned = normalizeNumerals(
+        waited.text
+          .trim()
+          .replace(/[,\u060C\u066C\s]/g, "")
+          .replace(/[−–—]/g, "-"),
+      );
+      const newRate = Number(cleaned);
+
+      if (!Number.isFinite(newRate) || newRate <= 0) {
+        prompt = [
+          "⚠️ <b>مقدار وارد شده نامعتبر است!</b>",
+          "",
+          `💵 نرخ فعلی هر ۱ استارز: <code>${currentRate} USD</code>`,
+          "",
+          "لطفاً یک عدد اعشاری مثبت و معتبر به عنوان نرخ دلار وارد کنید (مثال: <code>0.0175</code>):",
+        ].join("\n");
+        continue;
+      }
+
+      // Execute recalculation inside conversation.external, returning plain primitive data
+      const result = await conversation.external(async () => {
+        const res = await starsPricingService.recalculateStarsProducts(newRate);
+        return toPlain(res);
+      });
+
+      const lines = [
+        "✅ <b>نرخ واحد استارز با موفقیت بروزرسانی شد</b>",
+        "",
+        `⭐ نرخ پایه هر استارز: <code>$${result.unitUsdPrice}</code>`,
+        `💱 نرخ تبدیل دلار: <code>${formatToman(result.usdToTomanRate)}</code>`,
+        `📦 تعداد محصولات بروزرسانی شده: <b>${result.count}</b>`,
+        "",
+      ];
+
+      if (result.items.length > 0) {
+        lines.push("📊 <b>لیست قیمت‌های جدید:</b>");
+        for (const item of result.items) {
+          lines.push(
+            `• <b>${item.name}</b> (${item.starCount} استارز): <b>${formatToman(item.tomanPrice)}</b> ($${item.usdPrice})`,
+          );
+        }
+      } else {
+        lines.push("ℹ️ <i>هیچ محصول استارز فعالی در دیتابیس یافت نشد.</i>");
+      }
+
+      const backKb = new InlineKeyboard().text("🔙 بازگشت به کاتالوگ", Callbacks.adminCatalog);
+      await ensurePanel(ctx, lines.join("\n"), backKb, panel, { parse_mode: "HTML" });
+      return;
+    }
+  } catch (err) {
+    console.error("setStarsRateConversation error:", err);
+    await ctx.reply("⚠️ خطا در تنظیم نرخ واحد استارز.", {
+      reply_markup: adminCatalogKeyboard(),
     });
   }
 }

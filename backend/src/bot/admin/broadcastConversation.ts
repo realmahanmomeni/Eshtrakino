@@ -58,7 +58,11 @@ export async function broadcastConversation(
       continue;
     }
 
-    if (update.message?.text === "/cancel") {
+    const rawText = (update.message?.text ?? "").trim();
+    if (rawText === "/start" || rawText.startsWith("/start ")) {
+      return;
+    }
+    if (rawText === "/cancel") {
       try { await update.api.deleteMessage(update.chat!.id, update.message.message_id); } catch {}
       await ensurePanel(update, "❌ عملیات لغو شد.", { inline_keyboard: [[{ text: "🔙 بازگشت", callback_data: Callbacks.adminHome }]] }, p1);
       return;

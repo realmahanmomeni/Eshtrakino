@@ -19,6 +19,7 @@ import {
   LAST_AUTO_BACKUP_TIME_KEY,
   settingsService,
 } from "./services/settings/SettingsService";
+import { bootstrapCatalog } from "./services/catalog/bootstrapCatalog";
 
 async function runAutoBackupCheck(bot: Bot<BotContext>): Promise<void> {
   const hours = await settingsService.getNumberSetting(AUTO_BACKUP_HOURS_KEY, 0);
@@ -71,6 +72,26 @@ async function main(): Promise<void> {
   await prisma.$connect();
   console.log("Connected to PostgreSQL via Prisma");
 
+  // Ensure initial catalog integrity (Inspect-Before-Create)
+  await bootstrapCatalog();
+
+  // One-time startup check/cleanup: Clear individual product banners while keeping Category & SubCategory banners intact
+  try {
+    const clearedBanners = await prisma.product.updateMany({
+      where: {
+        bannerFileId: { not: null },
+      },
+      data: {
+        bannerFileId: null,
+      },
+    });
+    if (clearedBanners.count > 0) {
+      console.log(`[CLEANUP] Cleared product-level banners on ${clearedBanners.count} products.`);
+    }
+  } catch (err) {
+    console.warn("[CLEANUP] Could not clear product banners:", err);
+  }
+
   const bot = new Bot<BotContext>(env.BOT_TOKEN);
   const sessionStorage = new TtlMemorySessionStorage<SessionData>({
     ttlMs: 24 * 60 * 60 * 1000,
@@ -86,6 +107,22 @@ async function main(): Promise<void> {
   );
   bot.use(conversations());
   bot.use(ensureUserMiddleware);
+
+  // Forcibly exit any active conversation on /start before handlers run to prevent freeze/trapping
+  bot.command("start", async (ctx, next) => {
+    try {
+      if (ctx.conversation) {
+        if (typeof ctx.conversation.exitAll === "function") {
+          await ctx.conversation.exitAll();
+        } else if (typeof (ctx.conversation as any).exit === "function") {
+          await (ctx.conversation as any).exit();
+        }
+      }
+    } catch (e) {
+      // ignore if no conversation was active
+    }
+    return next();
+  });
 
   // Admin conversations + /admin must register before general handlers that might swallow updates
   registerAdmin(bot);

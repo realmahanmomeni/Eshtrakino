@@ -286,6 +286,11 @@ export async function checkoutConversation(
         "message:text",
       ]);
 
+      const textMsg = (update.message?.text ?? "").trim();
+      if (textMsg === "/start" || textMsg.startsWith("/start ")) {
+        return;
+      }
+
       const cbData = update.callbackQuery?.data;
 
       // Handle Discount Code Button
@@ -364,6 +369,9 @@ export async function checkoutConversation(
           }
 
           const rawText = (discountInput.message?.text ?? "").trim();
+          if (rawText === "/start" || rawText.startsWith("/start ")) {
+            return;
+          }
           if (rawText === "/cancel") {
             const curKb = await conversation.external(() =>
               buildCheckoutPaymentKeyboard(currentInvoice.id, balanceLabel, {

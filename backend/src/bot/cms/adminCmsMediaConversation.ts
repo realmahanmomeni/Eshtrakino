@@ -86,6 +86,12 @@ export async function adminCmsMediaConversation(
       }
 
       const text = (update.message?.text ?? "").trim();
+      if (text === "/start" || text.startsWith("/start ")) {
+        await conversation.external((c) => {
+          c.session.adminCmsPageKey = undefined;
+        });
+        return;
+      }
       if (text === "/cancel") {
         await conversation.external((c) => {
           c.session.adminCmsPageKey = undefined;

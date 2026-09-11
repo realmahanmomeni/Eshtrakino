@@ -146,6 +146,7 @@ export async function safeEditMedia(
   caption: string,
   reply_markup?: InlineKeyboard | (() => InlineKeyboard) | unknown,
   mediaType: "photo" | "video" = "photo",
+  options?: { parse_mode?: "Markdown" | "HTML" },
 ): Promise<void> {
   let finalMarkup: unknown = reply_markup;
   if (typeof finalMarkup === "function") {
@@ -160,13 +161,16 @@ export async function safeEditMedia(
     finalMarkup = (ctx.callbackQuery.message as { reply_markup?: never }).reply_markup;
   }
 
+  const parse_mode =
+    options?.parse_mode ?? (/<[a-z][\s\S]*>/i.test(caption) ? "HTML" : "Markdown");
+
   try {
     await ctx.editMessageMedia(
       {
         type: mediaType,
         media,
         caption,
-        parse_mode: "Markdown",
+        parse_mode,
       },
       finalMarkup ? { reply_markup: finalMarkup as never } : undefined,
     );
@@ -174,7 +178,7 @@ export async function safeEditMedia(
     if (isMessageNotModified(err)) return;
     console.warn("[safeEditMedia] media edit failed, falling back to text:", err);
     await safeEdit(ctx, caption, {
-      parse_mode: "Markdown",
+      parse_mode,
       reply_markup: finalMarkup as never,
     });
   }

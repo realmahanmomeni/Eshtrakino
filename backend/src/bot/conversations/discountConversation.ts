@@ -106,6 +106,9 @@ export async function applyDiscountConversation(
     }
 
     const rawText = (update.message?.text ?? "").trim();
+    if (rawText === "/start" || rawText.startsWith("/start ")) {
+      return;
+    }
     if (rawText === "/cancel") {
       const user = await conversation.external(async () => {
         const u = await invoiceService.ensureUser(BigInt(ctx.from!.id));

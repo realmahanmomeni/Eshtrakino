@@ -6,7 +6,17 @@ import { invoiceService } from "../../services/invoices/InvoiceService";
 import { formatToman, parsePrice } from "../../lib/money";
 import { exchangeRateService, convertUsdToToman } from "../../services/exchangeRateService";
 import { toPlain } from "../../lib/plain";
-import { waitCallback, waitOptionalPhoto, waitText, ensurePanel, panelFromCtx, waitTextOnPanel } from "../conversations/wait";
+import {
+  waitCallback,
+  waitOptionalPhoto,
+  waitText,
+  ensurePanel,
+  panelFromCtx,
+  waitTextOnPanel,
+  waitCallbackOnPanel,
+  type PanelRef,
+} from "../conversations/wait";
+import { safeDeleteMessage } from "../utils/safeEdit";
 import {
   adminBackupMenuKeyboard,
   adminCatalogKeyboard,
@@ -221,40 +231,49 @@ export async function addProductConversation(
   conversation: EshtrakinoConversation,
   ctx: SessionContext,
 ): Promise<void> {
+  let panel: PanelRef | null = panelFromCtx(ctx);
+
   try {
     const categories = await conversation.external(async () =>
       toPlain(await catalogService.listActiveCategories()),
     );
     if (categories.length === 0) {
-      await ctx.reply("⚠️ ابتدا یک دسته فعال بسازید.", {
-        reply_markup: adminCatalogKeyboard(),
-      });
+      await ensurePanel(
+        ctx,
+        "⚠️ ابتدا یک دسته فعال بسازید.",
+        adminCatalogKeyboard(),
+        panel,
+      );
       return;
     }
 
-    const catData = await waitCallback(
+    const catPrompt = [
+      "🗂 *افزودن محصول — مرحله ۱*",
+      "",
+      "دسته مورد نظر را انتخاب کنید:",
+    ].join("\n");
+
+    const catRes = await waitCallbackOnPanel(
       conversation,
       ctx,
-      [
-        "🗂 *افزودن محصول — مرحله ۱*",
-        "",
-        "دسته مورد نظر را انتخاب کنید:",
-      ].join("\n"),
+      catPrompt,
       convCategoryPickKeyboard(categories),
+      panel,
     );
-    if (!catData) {
-      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+    panel = catRes.panel;
+    if (!catRes.data || catRes.data === ConvCb.cancel) {
+      await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
       return;
     }
-    const catMatch = /^conv:cat:(\d+)$/.exec(catData);
+    const catMatch = /^conv:cat:(\d+)$/.exec(catRes.data);
     if (!catMatch) {
-      await ctx.reply("انتخاب نامعتبر بود.", { reply_markup: adminCatalogKeyboard() });
+      await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminCatalogKeyboard(), panel);
       return;
     }
     const categoryId = Number(catMatch[1]);
     const category = categories.find((c) => c.id === categoryId);
     if (!category) {
-      await ctx.reply("دسته یافت نشد.", { reply_markup: adminCatalogKeyboard() });
+      await ensurePanel(ctx, "دسته یافت نشد.", adminCatalogKeyboard(), panel);
       return;
     }
 
@@ -271,43 +290,52 @@ export async function addProductConversation(
       allowAddNew: true,
     });
 
-    const subData = await waitCallback(
+    const subPrompt = [
+      "📑 *افزودن محصول — مرحله ۲ (انتخاب سرویس)*",
+      "",
+      `دسته والد: *${category.name}*`,
+      "",
+      "سرویس / زیردسته مربوطه را انتخاب کنید:",
+      "(برای ساخت سرویس جدید «➕ افزودن سرویس جدید» و در صورت عدم نیاز «⏩ بدون سرویس» را انتخاب کنید)",
+    ].join("\n");
+
+    const subRes = await waitCallbackOnPanel(
       conversation,
       ctx,
-      [
-        "📑 *افزودن محصول — مرحله ۲ (انتخاب سرویس)*",
-        "",
-        `دسته والد: *${category.name}*`,
-        "",
-        "سرویس / زیردسته مربوطه را انتخاب کنید:",
-        "(برای ساخت سرویس جدید «➕ افزودن سرویس جدید» و در صورت عدم نیاز «⏩ بدون سرویس» را انتخاب کنید)",
-      ].join("\n"),
+      subPrompt,
       subKb,
+      panel,
     );
+    panel = subRes.panel;
 
-    if (!subData) {
-      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+    if (!subRes.data || subRes.data === ConvCb.cancel) {
+      await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
       return;
     }
 
-    if (subData === "conv:subcat:none") {
+    if (subRes.data === "conv:subcat:none") {
       subCategoryId = null;
-    } else if (subData === "conv:subcat:add") {
-      const newSubName = await waitText(
+    } else if (subRes.data === "conv:subcat:add") {
+      const newSubPrompt = [
+        "➕ *افزودن سرویس جدید*",
+        "",
+        `دسته والد: *${category.name}*`,
+        "",
+        "نام سرویس جدید را در چت تایپ و ارسال کنید (مثال: `Gemini Pro`):",
+      ].join("\n");
+
+      const newSubRes = await waitTextOnPanel(
         conversation,
         ctx,
-        [
-          "➕ *افزودن سرویس جدید*",
-          "",
-          `دسته والد: *${category.name}*`,
-          "",
-          "نام سرویس جدید را وارد کنید (مثال: `Gemini Pro`):",
-        ].join("\n"),
+        newSubPrompt,
+        panel,
       );
-      if (!newSubName) {
-        await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+      panel = newSubRes.panel;
+      if (!newSubRes.text) {
+        await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
         return;
       }
+      const newSubName = newSubRes.text.trim();
       const newSub = await conversation.external(async () =>
         toPlain(
           await catalogService.createSubCategory({
@@ -319,9 +347,9 @@ export async function addProductConversation(
       subCategoryId = newSub.id;
       subCategoryName = newSub.name;
     } else {
-      const subMatch = /^conv:subcat:(\d+)$/.exec(subData);
+      const subMatch = /^conv:subcat:(\d+)$/.exec(subRes.data);
       if (!subMatch) {
-        await ctx.reply("انتخاب نامعتبر بود.", { reply_markup: adminCatalogKeyboard() });
+        await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminCatalogKeyboard(), panel);
         return;
       }
       subCategoryId = Number(subMatch[1]);
@@ -329,37 +357,49 @@ export async function addProductConversation(
       if (foundSub) subCategoryName = foundSub.name;
     }
 
-    const name = await waitText(
-      conversation,
-      ctx,
-      [
-        "📝 *مرحله ۳ — نام پلن / محصول*",
-        "",
-        subCategoryName ? `سرویس: *${subCategoryName}*` : `دسته: *${category.name}*`,
-        "",
-        "نام پلن یا محصول را بفرستید (مثلاً `اشتراک ۱ ماهه` یا `پلن سالانه`):",
-      ].join("\n"),
-    );
-    if (!name) {
-      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+    // Step 3: Enter Plan / Product Name
+    const namePrompt = [
+      "📝 *مرحله ۳ — نام پلن / محصول*",
+      "",
+      subCategoryName ? `سرویس: *${subCategoryName}*` : `دسته: *${category.name}*`,
+      "",
+      "لطفاً نام محصول یا پلن را در چت تایپ و ارسال کنید:",
+      "(مثلاً: `اشتراک ۱ ماهه` یا `پلن سالانه`)",
+    ].join("\n");
+
+    const nameRes = await waitTextOnPanel(conversation, ctx, namePrompt, panel);
+    panel = nameRes.panel;
+    if (!nameRes.text) {
+      await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
       return;
     }
+    const name = nameRes.text.trim();
 
-    const currData = await waitCallback(
+    // Step 4: Price Unit
+    const currPrompt = [
+      "💵 *مرحله ۴ — واحد قیمت‌گذاری*",
+      "",
+      `محصول: *${name}*`,
+      "",
+      "واحد قیمت‌گذاری محصول را انتخاب کنید:",
+    ].join("\n");
+
+    const currKb = new InlineKeyboard()
+      .text("💵 قیمت دلاری (USD)", "conv:prod_curr:USD")
+      .text("🇮🇷 قیمت تومانی (TOMAN)", "conv:prod_curr:TOMAN")
+      .row()
+      .text("❌ لغو", ConvCb.cancel);
+
+    const currRes = await waitCallbackOnPanel(
       conversation,
       ctx,
-      [
-        "💵 *مرحله ۴ — واحد قیمت گذاری*",
-        "",
-        "واحد قیمت گذاری محصول را انتخاب کنید:",
-      ].join("\n"),
-      new InlineKeyboard()
-        .text("💵 قیمت دلاری (USD)", "conv:prod_curr:USD")
-        .text("🇮🇷 قیمت تومانی (TOMAN)", "conv:prod_curr:TOMAN")
-        .row(),
+      currPrompt,
+      currKb,
+      panel,
     );
-    if (!currData) {
-      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+    panel = currRes.panel;
+    if (!currRes.data || currRes.data === ConvCb.cancel) {
+      await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
       return;
     }
 
@@ -367,122 +407,266 @@ export async function addProductConversation(
     let price: number | null = null;
     let usdPrice: number | null = null;
 
-    if (currData === "conv:prod_curr:USD") {
+    if (currRes.data === "conv:prod_curr:USD") {
       currency = "USD";
       for (let attempt = 0; attempt < 5 && usdPrice === null; attempt++) {
-        const usdRaw = await waitText(
-          conversation,
-          ctx,
+        const usdPrompt =
           attempt === 0
             ? [
                 "💵 *قیمت دلاری (USD)*",
                 "",
-                "قیمت محصول را به *دلار* بفرستید (مثلاً `5` یا `9.99`):",
+                `محصول: *${name}*`,
+                "",
+                "قیمت محصول را به *دلار* در چت بفرستید (مثلاً `5` یا `9.99`):",
               ].join("\n")
             : [
                 "⚠️ *قیمت دلاری نامعتبر*",
                 "",
+                `محصول: *${name}*`,
+                "",
                 "دوباره عدد دلار را بفرستید (مثلاً `5` یا `9.99`):",
-              ].join("\n"),
-        );
-        if (!usdRaw) {
-          await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+              ].join("\n");
+
+        const usdRes = await waitTextOnPanel(conversation, ctx, usdPrompt, panel);
+        panel = usdRes.panel;
+        if (!usdRes.text) {
+          await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
           return;
         }
-        const cleaned = usdRaw.trim().replace(/,/g, ".");
+        const cleaned = usdRes.text.trim().replace(/,/g, ".");
         const n = parseFloat(cleaned);
         if (Number.isFinite(n) && n > 0) {
           usdPrice = Math.round(n * 100) / 100;
         }
       }
       if (usdPrice === null) {
-        await ctx.reply("قیمت دلاری معتبر دریافت نشد.", { reply_markup: adminCatalogKeyboard() });
+        await ensurePanel(ctx, "قیمت دلاری معتبر دریافت نشد.", adminCatalogKeyboard(), panel);
         return;
       }
       price = await conversation.external(async () => {
-        return convertUsdToToman(usdPrice!);
+        const rate = await exchangeRateService.getUsdRate();
+        return convertUsdToToman(usdPrice!, rate);
       });
     } else {
       currency = "TOMAN";
       for (let attempt = 0; attempt < 5 && price === null; attempt++) {
-        const priceRaw = await waitText(
-          conversation,
-          ctx,
+        const pricePrompt =
           attempt === 0
             ? [
                 "💵 *قیمت تومانی*",
                 "",
-                "قیمت محصول را به *تومان* بفرستید (مثلا 50000):",
+                `محصول: *${name}*`,
+                "",
+                "قیمت محصول را به *تومان* در چت بفرستید (فقط عدد، مثلا `50000`):",
               ].join("\n")
             : [
                 "⚠️ *قیمت نامعتبر*",
                 "",
-                "دوباره مبلغ به تومان را بفرستید (فقط عدد، مثلا 50000):",
-              ].join("\n"),
-        );
-        if (!priceRaw) {
-          await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+                `محصول: *${name}*`,
+                "",
+                "دوباره مبلغ به تومان را بفرستید (فقط عدد، مثلا `50000`):",
+              ].join("\n");
+
+        const priceRes = await waitTextOnPanel(conversation, ctx, pricePrompt, panel);
+        panel = priceRes.panel;
+        if (!priceRes.text) {
+          await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
           return;
         }
-        price = parsePrice(priceRaw);
+        price = parsePrice(priceRes.text);
       }
       if (price === null) {
-        await ctx.reply("قیمت معتبر دریافت نشد.", { reply_markup: adminCatalogKeyboard() });
+        await ensurePanel(ctx, "قیمت معتبر دریافت نشد.", adminCatalogKeyboard(), panel);
         return;
       }
     }
 
-    const delivData = await waitCallback(
+    // Step 6: Delivery Type
+    const delivPrompt = [
+      "🚚 *مرحله ۵ — نوع تحویل*",
+      "",
+      `محصول: *${name}*`,
+      "",
+      "نوع تحویل را انتخاب کنید:",
+    ].join("\n");
+
+    const delivRes = await waitCallbackOnPanel(
       conversation,
       ctx,
-      [
-        "🚚 *مرحله ۵ — نوع تحویل*",
-        "",
-        "نوع تحویل را انتخاب کنید:",
-      ].join("\n"),
+      delivPrompt,
       convDeliveryAddProductKeyboard(),
+      panel,
     );
-    if (!delivData) {
-      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
+    panel = delivRes.panel;
+    if (!delivRes.data || delivRes.data === ConvCb.cancel) {
+      await ensurePanel(ctx, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
       return;
     }
-    const delivMatch = /^conv:deladd:([A-Z_]+)$/.exec(delivData);
+    const delivMatch = /^conv:deladd:([A-Z_]+)$/.exec(delivRes.data);
     if (!delivMatch) {
-      await ctx.reply("انتخاب نامعتبر بود.", { reply_markup: adminCatalogKeyboard() });
+      await ensurePanel(ctx, "انتخاب نامعتبر بود.", adminCatalogKeyboard(), panel);
       return;
     }
     const deliveryType = delivMatch[1] as DeliveryType;
 
-    const description = await waitText(
-      conversation,
-      ctx,
-      [
-        "📝 *مرحله ۶ — توضیحات محصول (اختیاری)*",
-        "",
-        "توضیحات محصول را بفرستید:",
-        "",
-        "(این متن در صفحه جزئیات محصول نمایش داده می شود)",
-      ].join("\n"),
-    );
-    if (description === null) {
-      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
-      return;
+    // Step 7: Description (optional)
+    const descPrompt = [
+      "📝 *مرحله ۶ — توضیحات محصول (اختیاری)*",
+      "",
+      `محصول: *${name}*`,
+      "",
+      "توضیحات محصول را در چت تایپ و ارسال کنید یا دکمه «⏩ بدون توضیحات» را انتخاب کنید:",
+      "",
+      "(این متن در صفحه جزئیات محصول نمایش داده می‌شود)",
+    ].join("\n");
+
+    const descKb = new InlineKeyboard()
+      .text("⏩ بدون توضیحات", "conv:prd:skip_desc")
+      .row()
+      .text("❌ لغو", ConvCb.cancel);
+
+    panel = await ensurePanel(ctx, descPrompt, descKb, panel);
+
+    let description: string | null = null;
+    while (true) {
+      const update = await conversation.waitFor(["message:text", "callback_query:data"]);
+      const rawText = (update.message?.text ?? "").trim();
+      if (rawText === "/start" || rawText.startsWith("/start ")) {
+        return;
+      }
+      if (update.callbackQuery?.data === ConvCb.cancel || rawText === "/cancel") {
+        if (update.callbackQuery) {
+          try {
+            await update.answerCallbackQuery({ text: "لغو شد" });
+          } catch {}
+        }
+        await ensurePanel(update, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
+        return;
+      }
+
+      if (update.callbackQuery?.data === "conv:prd:skip_desc") {
+        try {
+          await update.answerCallbackQuery({ text: "بدون توضیحات" });
+        } catch {}
+        description = null;
+        break;
+      }
+
+      if (update.callbackQuery) {
+        try {
+          await update.answerCallbackQuery();
+        } catch {}
+        continue;
+      }
+
+      const text = (update.message?.text ?? "").trim();
+      if (text) {
+        if (update.chat && update.message) {
+          await safeDeleteMessage(update.api, update.chat.id, update.message.message_id);
+        }
+        if (text === "-" || text === "بدون توضیحات" || text === "skip" || text === "رد") {
+          description = null;
+        } else {
+          description = text;
+        }
+        break;
+      }
     }
 
-    const bannerRaw = await waitOptionalPhoto(
-      conversation,
-      ctx,
-      [
-        "🖼 *مرحله ۷ — بنر محصول (اختیاری)*",
-        "",
-        "تصویر بنر محصول را بفرستید، یا «بدون بنر» را بزنید:",
-      ].join("\n"),
-    );
-    if (bannerRaw === null) {
-      await ctx.reply("عملیات لغو شد.", { reply_markup: adminCatalogKeyboard() });
-      return;
+    // Step 8: Banner Photo (optional)
+    const bannerPrompt = [
+      "🖼 *مرحله ۷ — بنر محصول (اختیاری)*",
+      "",
+      `محصول: *${name}*`,
+      "",
+      "تصویر بنر محصول را بفرستید، یا دکمه «⏭ بدون بنر» را انتخاب کنید:",
+    ].join("\n");
+
+    const bannerKb = new InlineKeyboard()
+      .text("⏭ بدون بنر", ConvCb.skipPhoto)
+      .row()
+      .text("❌ لغو", ConvCb.cancel);
+
+    panel = await ensurePanel(ctx, bannerPrompt, bannerKb, panel);
+
+    let bannerFileId: string | null = null;
+    while (true) {
+      const update = await conversation.waitFor([
+        "message:photo",
+        "message:document",
+        "message:text",
+        "callback_query:data",
+      ]);
+
+      const rawText = (update.message?.text ?? "").trim();
+      if (rawText === "/start" || rawText.startsWith("/start ")) {
+        return;
+      }
+      if (update.callbackQuery?.data === ConvCb.cancel || rawText === "/cancel") {
+        if (update.callbackQuery) {
+          try {
+            await update.answerCallbackQuery({ text: "لغو شد" });
+          } catch {}
+        }
+        await ensurePanel(update, "عملیات لغو شد.", adminCatalogKeyboard(), panel);
+        return;
+      }
+
+      if (update.callbackQuery?.data === ConvCb.skipPhoto) {
+        try {
+          await update.answerCallbackQuery({ text: "بدون بنر" });
+        } catch {}
+        bannerFileId = null;
+        break;
+      }
+
+      if (update.callbackQuery) {
+        try {
+          await update.answerCallbackQuery({ text: "عکس بفرستید یا «بدون بنر» را بزنید" });
+        } catch {}
+        continue;
+      }
+
+      const photos = update.message?.photo;
+      if (photos && photos.length > 0) {
+        if (update.chat && update.message) {
+          await safeDeleteMessage(update.api, update.chat.id, update.message.message_id);
+        }
+        bannerFileId = photos[photos.length - 1]!.file_id;
+        break;
+      }
+
+      const doc = update.message?.document;
+      if (doc?.mime_type?.startsWith("image/")) {
+        if (update.chat && update.message) {
+          await safeDeleteMessage(update.api, update.chat.id, update.message.message_id);
+        }
+        bannerFileId = doc.file_id;
+        break;
+      }
+
+      const text = (update.message?.text ?? "").trim();
+      const lower = text.toLowerCase();
+      if (
+        lower === "no" ||
+        lower === "skip" ||
+        lower === "none" ||
+        text === "خیر" ||
+        text === "نه" ||
+        text === "بدون بنر" ||
+        text === "-"
+      ) {
+        if (update.chat && update.message) {
+          await safeDeleteMessage(update.api, update.chat.id, update.message.message_id);
+        }
+        bannerFileId = null;
+        break;
+      }
+
+      if (update.chat && update.message) {
+        await safeDeleteMessage(update.api, update.chat.id, update.message.message_id);
+      }
     }
-    const bannerFileId = bannerRaw.length > 0 ? bannerRaw : null;
 
     const product = await conversation.external(async () =>
       toPlain(
@@ -508,23 +692,33 @@ export async function addProductConversation(
         ? `*$${usdPrice}* (معادل فعلی: *${formatToman(price)}*)`
         : `*${formatToman(price)}*`;
 
-    await ctx.reply(
-      [
-        "✅ *محصول ثبت شد*",
-        "",
-        `📦 نام: *${product.name}*`,
-        `🗂 دسته: *${category.name}*`,
-        `💵 قیمت: ${priceDisplay}`,
-        `🚚 تحویل: *${deliveryType}*`,
-        bannerLine,
-      ].join("\n"),
-      { parse_mode: "Markdown", reply_markup: adminCatalogKeyboard() },
+    const successLines = [
+      "✅ *محصول با موفقیت ثبت شد*",
+      "",
+      `📦 نام: *${product.name}*`,
+    ];
+    if (subLine) successLines.push(subLine);
+    successLines.push(
+      `🗂 دسته: *${category.name}*`,
+      `💵 قیمت: ${priceDisplay}`,
+      `🚚 تحویل: *${deliveryType}*`,
+      bannerLine,
+    );
+
+    await ensurePanel(
+      ctx,
+      successLines.join("\n"),
+      adminCatalogKeyboard(),
+      panel,
     );
   } catch (err) {
     console.error("addProductConversation error:", err);
-    await ctx.reply("⚠️ خطا در افزودن محصول. دوباره تلاش کنید.", {
-      reply_markup: adminCatalogKeyboard(),
-    });
+    await ensurePanel(
+      ctx,
+      "⚠️ خطا در افزودن محصول. دوباره تلاش کنید.",
+      adminCatalogKeyboard(),
+      panel,
+    );
   }
 }
 
@@ -1378,7 +1572,20 @@ export async function addDiscountConversation(
     let targetProductIds: number[] = [];
 
     while (true) {
-      const update = await conversation.waitFor("callback_query:data");
+      const update = await conversation.waitFor(["callback_query:data", "message:text"]);
+      const rawText = (update.message?.text ?? "").trim();
+      if (rawText === "/start" || rawText.startsWith("/start ")) {
+        return;
+      }
+      if (rawText === "/cancel") {
+        await ensurePanel(
+          update,
+          "❌ ثبت کد تخفیف لغو شد.",
+          adminHomeKeyboard(),
+          panel,
+        );
+        return;
+      }
       const cb = update.callbackQuery?.data;
 
       if (cb === ConvCb.cancel) {
@@ -1513,7 +1720,20 @@ export async function addDiscountConversation(
           );
         }
 
-        const update = await conversation.waitFor("callback_query:data");
+        const update = await conversation.waitFor(["callback_query:data", "message:text"]);
+        const rawText = (update.message?.text ?? "").trim();
+        if (rawText === "/start" || rawText.startsWith("/start ")) {
+          return;
+        }
+        if (rawText === "/cancel") {
+          await ensurePanel(
+            update,
+            "❌ ثبت کد تخفیف لغو شد.",
+            adminHomeKeyboard(),
+            panel,
+          );
+          return;
+        }
         const cb = update.callbackQuery?.data;
 
         if (cb === "dsc:cancel" || cb === ConvCb.cancel) {
@@ -1819,7 +2039,24 @@ export async function deleteDiscountCodesConversation(
         panel,
       );
 
-      const update = await conversation.waitFor("callback_query:data");
+      const update = await conversation.waitFor(["callback_query:data", "message:text"]);
+      const rawText = (update.message?.text ?? "").trim();
+      if (rawText === "/start" || rawText.startsWith("/start ")) {
+        return;
+      }
+      if (rawText === "/cancel") {
+        const latestCodes = await conversation.external(async () => {
+          const rows = await discountService.listAllDiscountCodes();
+          return toPlain(rows);
+        });
+        await ensurePanel(
+          update,
+          formatDiscountHubText(latestCodes),
+          adminDiscountHubKeyboard(),
+          panel,
+        );
+        return;
+      }
       const cb = update.callbackQuery?.data;
 
       if (cb === "dsc_del:cancel") {
@@ -1961,10 +2198,20 @@ export async function editCategoryCmsConversation(
           "callback_query:data",
         ]);
 
-        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
-          } catch {}
+        const rawText = (update.message?.text ?? "").trim();
+        if (rawText === "/start" || rawText.startsWith("/start ")) {
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          return;
+        }
+        if (update.callbackQuery?.data === ConvCb.cancel || rawText === "/cancel") {
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "لغو شد" });
+            } catch {}
+          }
           await conversation.external((c) => {
             c.session.adminCmsCategoryId = undefined;
             c.session.adminCmsAction = undefined;
@@ -1974,9 +2221,11 @@ export async function editCategoryCmsConversation(
         }
 
         if (update.callbackQuery?.data === "conv:cat:del_desc" || (update.message?.text ?? "").trim() === "-") {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "توضیحات حذف شد" });
-          } catch {}
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "توضیحات حذف شد" });
+            } catch {}
+          }
           await conversation.external(async () => {
             await catalogService.updateCategoryDescription(categoryId, null);
           });
@@ -2029,10 +2278,20 @@ export async function editCategoryCmsConversation(
           "callback_query:data",
         ]);
 
-        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
-          } catch {}
+        const rawText = (update.message?.text ?? "").trim();
+        if (rawText === "/start" || rawText.startsWith("/start ")) {
+          await conversation.external((c) => {
+            c.session.adminCmsCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          return;
+        }
+        if (update.callbackQuery?.data === ConvCb.cancel || rawText === "/cancel") {
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "لغو شد" });
+            } catch {}
+          }
           await conversation.external((c) => {
             c.session.adminCmsCategoryId = undefined;
             c.session.adminCmsAction = undefined;
@@ -2046,9 +2305,11 @@ export async function editCategoryCmsConversation(
           (update.message?.text ?? "").trim() === "-" ||
           (update.message?.text ?? "").trim() === "بدون بنر"
         ) {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "بنر حذف شد" });
-          } catch {}
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "بنر حذف شد" });
+            } catch {}
+          }
           await conversation.external(async () => {
             await catalogService.updateCategoryBanner(categoryId, null);
           });
@@ -2082,7 +2343,7 @@ export async function editCategoryCmsConversation(
 
         if (update.callbackQuery) {
           try {
-            await update.callbackQuery.answerCallbackQuery({ text: "لطفاً عکس بفرستید" });
+            await update.answerCallbackQuery({ text: "لطفاً عکس بفرستید" });
           } catch {}
           continue;
         }
@@ -2154,10 +2415,20 @@ export async function editSubCategoryCmsConversation(
           "callback_query:data",
         ]);
 
-        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
-          } catch {}
+        const rawText = (update.message?.text ?? "").trim();
+        if (rawText === "/start" || rawText.startsWith("/start ")) {
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          return;
+        }
+        if (update.callbackQuery?.data === ConvCb.cancel || rawText === "/cancel") {
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "لغو شد" });
+            } catch {}
+          }
           await conversation.external((c) => {
             c.session.adminCmsSubCategoryId = undefined;
             c.session.adminCmsAction = undefined;
@@ -2167,9 +2438,11 @@ export async function editSubCategoryCmsConversation(
         }
 
         if (update.callbackQuery?.data === "conv:subcat:del_desc" || (update.message?.text ?? "").trim() === "-") {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "توضیحات حذف شد" });
-          } catch {}
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "توضیحات حذف شد" });
+            } catch {}
+          }
           await conversation.external(async () => {
             await catalogService.updateSubCategoryDescription(subCategoryId, null);
           });
@@ -2222,10 +2495,20 @@ export async function editSubCategoryCmsConversation(
           "callback_query:data",
         ]);
 
-        if (update.callbackQuery?.data === ConvCb.cancel || (update.message?.text ?? "").trim() === "/cancel") {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "لغو شد" });
-          } catch {}
+        const rawText = (update.message?.text ?? "").trim();
+        if (rawText === "/start" || rawText.startsWith("/start ")) {
+          await conversation.external((c) => {
+            c.session.adminCmsSubCategoryId = undefined;
+            c.session.adminCmsAction = undefined;
+          });
+          return;
+        }
+        if (update.callbackQuery?.data === ConvCb.cancel || rawText === "/cancel") {
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "لغو شد" });
+            } catch {}
+          }
           await conversation.external((c) => {
             c.session.adminCmsSubCategoryId = undefined;
             c.session.adminCmsAction = undefined;
@@ -2239,9 +2522,11 @@ export async function editSubCategoryCmsConversation(
           (update.message?.text ?? "").trim() === "-" ||
           (update.message?.text ?? "").trim() === "بدون بنر"
         ) {
-          try {
-            await update.callbackQuery?.answerCallbackQuery({ text: "بنر حذف شد" });
-          } catch {}
+          if (update.callbackQuery) {
+            try {
+              await update.answerCallbackQuery({ text: "بنر حذف شد" });
+            } catch {}
+          }
           await conversation.external(async () => {
             await catalogService.updateSubCategoryBanner(subCategoryId, null);
           });
@@ -2275,7 +2560,7 @@ export async function editSubCategoryCmsConversation(
 
         if (update.callbackQuery) {
           try {
-            await update.callbackQuery.answerCallbackQuery({ text: "لطفاً عکس بفرستید" });
+            await update.answerCallbackQuery({ text: "لطفاً عکس بفرستید" });
           } catch {}
           continue;
         }

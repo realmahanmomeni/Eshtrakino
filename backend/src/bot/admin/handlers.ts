@@ -1,6 +1,6 @@
 import { Composer, type Bot } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
-import { InvoiceStatus, TicketStatus } from "@prisma/client";
+import { DeliveryType, InvoiceStatus, TicketStatus } from "@prisma/client";
 import type { BotContext } from "../context";
 import { adminOnlyMiddleware } from "./middleware";
 import { hasAnyAdminAccess, hasPermission } from "./rbac";
@@ -28,7 +28,11 @@ import {
   adminUserProfileKeyboard,
   adminUsersListKeyboard,
   adminDiscountHubKeyboard,
+  adminProductDetailKeyboard,
+  adminDeliveryTypeSwitchKeyboard,
+  adminSuppliersKeyboard,
 } from "./keyboards";
+import { renderAdminProductCardText, getDeliveryModeCaption } from "./catalog";
 import { Callbacks } from "../keyboards/callbacks";
 import { catalogService } from "../../services/catalog/CatalogService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
@@ -63,6 +67,7 @@ import {
   setCredentialReqConversation,
   setProductStockAlertConversation,
   setProductDurationConversation,
+  setStarsRateConversation,
 } from "./catalog";
 import {
   addCategoryConversation,
@@ -93,6 +98,7 @@ import {
 import { editPageTextConversation } from "../cms/editPageTextConversation";
 import { adminCmsMediaConversation } from "../cms/adminCmsMediaConversation";
 import { presentCmsPage } from "../cms/presentPage";
+import { addSupplierApiKeyConversation, mapSupplierProductConversation } from "./supplierConversation";
 import {
   presentCmsCategoryList,
   presentCmsCategoryView,
@@ -165,6 +171,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   bot.use(createConversation(setProductStockAlertConversation, "setProductStockAlert"));
   bot.use(createConversation(setProductDurationConversation, "setProductDuration"));
   bot.use(createConversation(setCredentialReqConversation, "setCredentialReq"));
+  bot.use(createConversation(setStarsRateConversation, "setStarsRateConversation"));
   bot.use(createConversation(addPaymentMethodConversation, "addPaymentMethod"));
   bot.use(createConversation(configurePaymentConversation, "configurePayment"));
   bot.use(createConversation(rejectInvoiceConversation, "rejectInvoice"));
@@ -194,6 +201,8 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   bot.use(createConversation(editCategoryCmsConversation, "editCategoryCmsConversation"));
   bot.use(createConversation(editSubCategoryCmsConversation, "editSubCategoryCms"));
   bot.use(createConversation(editSubCategoryCmsConversation, "editSubCategoryCmsConversation"));
+  bot.use(createConversation(addSupplierApiKeyConversation, "addSupplierApiKeyConversation"));
+  bot.use(createConversation(mapSupplierProductConversation, "mapSupplierProductConversation"));
   
   bot.use(rbacAdmin);
 
@@ -215,10 +224,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     );
   });
 
-  const adminCommands = new Composer<BotContext>();
-  adminCommands.use(adminOnlyMiddleware);
-
-  adminCommands.command("setup_topics", async (ctx) => {
+  bot.command("setup_topics", adminOnlyMiddleware, async (ctx) => {
     try {
       await groupLogger.initializeAllTopics(ctx.api);
       await ctx.reply(
@@ -234,8 +240,6 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       );
     }
   });
-
-  bot.use(adminCommands);
 
   const admin = new Composer<BotContext>().filter((ctx) => {
     const data = ctx.callbackQuery?.data;
@@ -369,6 +373,39 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await ctx.answerCallbackQuery();
     try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
     await ctx.conversation.enter("broadcastConversation");
+  });
+
+  bot.callbackQuery("adm:suppliers", async (ctx) => {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await safeEdit(
+      ctx,
+      "🔗 *مدیریت تامین‌کنندگان*\n\nیکی از گزینه‌های زیر را انتخاب کنید:",
+      adminSuppliersKeyboard(),
+    );
+  });
+
+  bot.callbackQuery("adm:sup:addkey", async (ctx) => {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    try { await ctx.conversation.exitAll(); } catch {}
+    await ctx.conversation.enter("addSupplierApiKeyConversation");
+  });
+
+  bot.callbackQuery("adm:sup:map", async (ctx) => {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    try { await ctx.conversation.exitAll(); } catch {}
+    await ctx.conversation.enter("mapSupplierProductConversation");
   });
 
   bot.callbackQuery(/^adm:tkt:reply:(\d+)$/, async (ctx) => {
@@ -777,6 +814,18 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       ].join("\n"),
       adminSubCategoriesKeyboard(),
     );
+  });
+
+  admin.callbackQuery(Callbacks.adminStarsRate, async (ctx) => {
+    if (!ctx.from || !(await hasPermission(ctx.from.id, "CATALOG"))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {}
+    await ctx.conversation.enter("setStarsRateConversation");
   });
 
   admin.callbackQuery(Callbacks.adminAddSubCategory, async (ctx) => {
@@ -1404,6 +1453,59 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     }
     await ctx.conversation.enter("setCredentialReq");
   });
+
+  admin.callbackQuery(/^adm:prod:toggle_delivery:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    await ctx.answerCallbackQuery();
+    const product = await catalogService.getProduct(id, false);
+    if (!product) {
+      await safeEdit(ctx, "محصول یافت نشد.", adminCatalogKeyboard());
+      return;
+    }
+
+    await safeEdit(
+      ctx,
+      [
+        "🔄 *تغییر نوع تحویل محصول*",
+        "",
+        `📦 محصول: *${product.name}*`,
+        getDeliveryModeCaption(product.deliveryType),
+        "",
+        "لطفاً نوع تحویل جدید را انتخاب کنید:",
+      ].join("\n"),
+      adminDeliveryTypeSwitchKeyboard(id),
+    );
+  });
+
+  admin.callbackQuery(
+    /^adm:prod:set_delivery:(\d+):(SUPPLIER_AUTO|MANUAL|CREDENTIALS_REQUIRED)$/,
+    async (ctx) => {
+      const id = Number(ctx.match![1]);
+      const newType = ctx.match![2] as DeliveryType;
+      await ctx.answerCallbackQuery({ text: "✅ نوع تحویل با موفقیت بروزرسانی شد." });
+
+      await catalogService.updateProductDeliveryType(id, newType);
+      const product = await catalogService.getProduct(id, false);
+      if (!product) {
+        await safeEdit(ctx, "محصول یافت نشد.", adminCatalogKeyboard());
+        return;
+      }
+
+      ctx.session.adminTargetId = id;
+      ctx.session.adminTargetType = "product";
+
+      let stockCount: number | null = null;
+      if (product.deliveryType === "READY") {
+        stockCount = await inventoryService.countAvailable(id);
+      }
+
+      await safeEdit(
+        ctx,
+        renderAdminProductCardText(product, stockCount),
+        adminProductDetailKeyboard(product),
+      );
+    },
+  );
 
   admin.callbackQuery(/^adm:ticket:close:(\d+)$/, async (ctx) => {
     const id = Number(ctx.match![1]);

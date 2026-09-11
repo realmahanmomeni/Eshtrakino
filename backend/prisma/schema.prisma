@@ -14,6 +14,7 @@ enum DeliveryType {
   MANUAL
   CREDENTIALS_REQUIRED
   USER_CHOICE
+  SUPPLIER_AUTO
 }
 
 enum InvoiceStatus {
@@ -55,17 +56,17 @@ enum SwapInvoiceStatus {
 }
 
 model User {
-  id         Int       @id @default(autoincrement())
-  telegramId BigInt    @unique
-  balance    Decimal   @default(0) @db.Decimal(14, 2)
-  joinedAt   DateTime  @default(now())
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  adminPermissions String[] @default([])
-  invoices            Invoice[]
-  tickets             Ticket[]
-  walletTransactions  WalletTransaction[]
-  swapWalletInvoices  SwapWalletInvoice[]
+  id                 Int                 @id @default(autoincrement())
+  telegramId         BigInt              @unique
+  balance            Decimal             @default(0) @db.Decimal(14, 2)
+  joinedAt           DateTime            @default(now())
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  adminPermissions   String[]            @default([])
+  invoices           Invoice[]
+  tickets            Ticket[]
+  walletTransactions WalletTransaction[]
+  swapWalletInvoices SwapWalletInvoice[]
 
   @@index([telegramId])
   @@index([updatedAt])
@@ -117,31 +118,32 @@ model SubCategory {
 }
 
 model Product {
-  id             Int          @id @default(autoincrement())
-  name           String
-  price          Decimal      @db.Decimal(14, 2)
-  currency       String       @default("TOMAN")
-  usdPrice       Float?
-  categoryId     Int
-  subCategoryId  Int?
-  deliveryType   DeliveryType
-  credentialReq  CredentialRequirement @default(BOTH)
-  lowStockThreshold Int       @default(1)
+  id                     Int                     @id @default(autoincrement())
+  name                   String
+  price                  Decimal                 @db.Decimal(14, 2)
+  currency               String                  @default("TOMAN")
+  usdPrice               Float?
+  categoryId             Int
+  subCategoryId          Int?
+  deliveryType           DeliveryType
+  credentialReq          CredentialRequirement   @default(BOTH)
+  lowStockThreshold      Int                     @default(1)
   /// Subscription length in days for renewal reminders (e.g. 30)
-  durationDays   Int?
+  durationDays           Int?
   /// Multiline product details / features shown on the detail screen
-  description    String?
+  description            String?
   /// Telegram file_id for custom product banner image
-  bannerFileId   String?
+  bannerFileId           String?
   /// JSON string array, e.g. ["Email","Password"]
-  requiredFields Json         @default("[]")
-  isActive       Boolean      @default(true)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  category       Category     @relation(fields: [categoryId], references: [id])
-  subCategory    SubCategory? @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
-  invoices       Invoice[]
-  inventory      ProductItem[]
+  requiredFields         Json                    @default("[]")
+  isActive               Boolean                 @default(true)
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  category               Category                @relation(fields: [categoryId], references: [id])
+  subCategory            SubCategory?            @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
+  invoices               Invoice[]
+  inventory              ProductItem[]
+  supplierProductMapping SupplierProductMapping?
 
   @@index([categoryId])
   @@index([subCategoryId])
@@ -164,38 +166,39 @@ model ProductItem {
 }
 
 model Invoice {
-  id            Int           @id @default(autoincrement())
-  userId        Int
-  productId     Int?
-  status        InvoiceStatus @default(PENDING)
-  amount        Decimal       @db.Decimal(14, 2)
-  expiresAt     DateTime
-  isWalletTopUp Boolean       @default(false)
-  topUpAmount   Decimal?      @db.Decimal(14, 2)
-  discountCode    String?
-  discountPercent Int?
-  discountAmount  Decimal       @default(0) @db.Decimal(14, 2)
-  originalAmount  Decimal?      @db.Decimal(14, 2)
+  id                  Int            @id @default(autoincrement())
+  userId              Int
+  productId           Int?
+  status              InvoiceStatus  @default(PENDING)
+  amount              Decimal        @db.Decimal(14, 2)
+  expiresAt           DateTime
+  isWalletTopUp       Boolean        @default(false)
+  topUpAmount         Decimal?       @db.Decimal(14, 2)
+  discountCode        String?
+  discountPercent     Int?
+  discountAmount      Decimal        @default(0) @db.Decimal(14, 2)
+  originalAmount      Decimal?       @db.Decimal(14, 2)
   /// Buyer's selected delivery mode when product.deliveryType is USER_CHOICE
-  deliveryPreference String?
+  deliveryPreference  String?
   /// Telegram file_id of the uploaded receipt photo
-  receiptFileId String?
-  rejectReason  String?
+  receiptFileId       String?
+  rejectReason        String?
   /// Buyer answers to product.requiredFields, e.g. {"Email":"a@b.com"}
-  userInputData Json?
+  userInputData       Json?
   /// Message ID of receipt photo sent to log group
   logMessageId        Int?
   /// Telegram ID of admin who approved or rejected the invoice
   approvedByAdminId   BigInt?
   /// Name/username of admin who approved or rejected the invoice
   approvedByAdminName String?
-  reminded5Days   Boolean       @default(false)
-  remindedLastDay Boolean       @default(false)
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  user          User          @relation(fields: [userId], references: [id])
-  product       Product?      @relation(fields: [productId], references: [id])
-  productItem   ProductItem?
+  reminded5Days       Boolean        @default(false)
+  remindedLastDay     Boolean        @default(false)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  user                User           @relation(fields: [userId], references: [id])
+  product             Product?       @relation(fields: [productId], references: [id])
+  productItem         ProductItem?
+  supplierOrder       SupplierOrder?
 
   @@index([userId, status])
   @@index([status])
@@ -257,19 +260,19 @@ model SystemSetting {
 
 /// CMS: editable page copy for Telegram-native content management
 model PageContent {
-  id             Int      @id @default(autoincrement())
+  id            Int      @id @default(autoincrement())
   /// Stable key: home | shop | account | support | wallet
-  pageKey        String   @unique @db.VarChar(64)
+  pageKey       String   @unique @db.VarChar(64)
   /// Markdown body shown on that page (admin-editable)
-  textContent    String   @db.Text
+  textContent   String   @db.Text
   /// Telegram file_id for page banner (photo or video)
-  mediaFileId    String?
+  mediaFileId   String?
   /// "photo" | "video"
-  mediaType      String?  @db.VarChar(16)
+  mediaType     String?  @db.VarChar(16)
   /// User-facing list button columns: 1 or 2
-  layoutColumns  Int      @default(1)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  layoutColumns Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 /// Swap Wallet crypto top-up invoices (unique fractional USDT slots for matching)
@@ -291,6 +294,7 @@ model SwapWalletInvoice {
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Partial unique on exactCryptoAmount WHERE status='PENDING' is in migration SQL
 
   @@index([userId])
   @@index([status])
@@ -298,7 +302,6 @@ model SwapWalletInvoice {
   @@index([providerRef])
   @@index([status, exactCryptoAmount])
   @@index([status, createdAt])
-  /// Partial unique on exactCryptoAmount WHERE status='PENDING' is in migration SQL
 }
 
 model DiscountCode {
@@ -314,4 +317,84 @@ model DiscountCode {
 
   @@index([code])
   @@index([isActive])
+}
+
+enum SupplierOrderStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  UNCERTAIN
+}
+
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  apiKeys  SupplierApiKey[]
+  mappings SupplierProductMapping[]
+  orders   SupplierOrder[]
+}
+
+model SupplierApiKey {
+  id              Int       @id @default(autoincrement())
+  supplierId      Int
+  keyName         String
+  /// Encrypted API key value
+  encryptedKey    String
+  isActive        Boolean   @default(true)
+  isValid         Boolean   @default(false)
+  lastBalance     Decimal?  @db.Decimal(14, 2)
+  lastError       String?   @db.Text
+  lastValidatedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  supplier Supplier        @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  orders   SupplierOrder[]
+
+  @@index([supplierId, isActive, isValid])
+}
+
+model SupplierProductMapping {
+  id                 Int      @id @default(autoincrement())
+  productId          Int      @unique
+  supplierId         Int
+  supplierProductKey String
+  supplierVariantKey String?
+  /// Maximum allowed supplier price in their currency. If actual exceeds this, block purchase.
+  maxPriceLimit      Decimal? @db.Decimal(14, 2)
+  isAutoPurchase     Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+
+  @@index([supplierId])
+}
+
+model SupplierOrder {
+  id                Int                 @id @default(autoincrement())
+  internalInvoiceId Int                 @unique
+  supplierId        Int
+  apiKeyId          Int
+  supplierOrderId   String?
+  status            SupplierOrderStatus @default(PENDING)
+  costAmount        Decimal?            @db.Decimal(14, 2)
+  /// Encrypted delivery fields returned by supplier
+  deliveryPayload   String?             @db.Text
+  errorMessage      String?             @db.Text
+  reconciled        Boolean             @default(false)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  invoice  Invoice        @relation(fields: [internalInvoiceId], references: [id], onDelete: Restrict)
+  supplier Supplier       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  apiKey   SupplierApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Restrict)
+
+  @@index([supplierId, status])
+  @@index([internalInvoiceId])
 }

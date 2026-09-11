@@ -23,11 +23,15 @@ export async function ensurePanel(
   text: string,
   reply_markup: unknown,
   panel?: PanelRef | null,
+  options?: { parse_mode?: "Markdown" | "HTML" },
 ): Promise<PanelRef> {
+  const parse_mode =
+    options?.parse_mode ?? (/<[a-z][\s\S]*>/i.test(text) ? "HTML" : "Markdown");
+
   if (panel) {
     try {
       await safeEditById(ctx.api, panel.chatId, panel.messageId, text, {
-        parse_mode: "Markdown",
+        parse_mode,
         reply_markup: reply_markup as never,
       });
       return panel;
@@ -39,7 +43,7 @@ export async function ensurePanel(
 
   try {
     await safeEdit(ctx, text, {
-      parse_mode: "Markdown",
+      parse_mode,
       reply_markup: reply_markup as never,
     });
     const fromCtx = panelFromCtx(ctx);
@@ -49,7 +53,7 @@ export async function ensurePanel(
   }
 
   const sent = await ctx.reply(text, {
-    parse_mode: "Markdown",
+    parse_mode,
     reply_markup: reply_markup as never,
   });
   return { chatId: sent.chat.id, messageId: sent.message_id };
@@ -60,6 +64,12 @@ async function deleteUserMessage(ctx: SessionContext): Promise<void> {
   const messageId = ctx.message?.message_id;
   if (chatId == null || messageId == null) return;
   await safeDeleteMessage(ctx.api, chatId, messageId);
+}
+
+function isExitCommand(text?: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  return trimmed === "/cancel" || trimmed === "/start" || trimmed.startsWith("/start ");
 }
 
 export async function waitText(
@@ -100,7 +110,7 @@ export async function waitText(
     }
 
     const text = (update.message?.text ?? "").trim();
-    if (text === "/cancel") return null;
+    if (isExitCommand(text)) return null;
     if (text) return text;
   }
 }
@@ -112,9 +122,10 @@ export async function waitTextOnPanel(
   conversation: EshtrakinoConversation,
   ctx: SessionContext,
   prompt: string,
-  panel: PanelRef,
+  panel?: PanelRef | null,
+  options?: { parse_mode?: "Markdown" | "HTML" },
 ): Promise<{ text: string | null; panel: PanelRef }> {
-  const active = await ensurePanel(ctx, prompt, cancelKeyboard, panel);
+  const active = await ensurePanel(ctx, prompt, cancelKeyboard, panel, options);
 
   while (true) {
     const update = await conversation.waitFor(["message:text", "callback_query:data"]);
@@ -139,8 +150,10 @@ export async function waitTextOnPanel(
     }
 
     const text = (update.message?.text ?? "").trim();
-    if (text === "/cancel") {
-      await ensurePanel(update, "❌ عملیات لغو شد.", { inline_keyboard: [] }, active);
+    if (isExitCommand(text)) {
+      if (text === "/cancel") {
+        await ensurePanel(update, "❌ عملیات لغو شد.", { inline_keyboard: [] }, active);
+      }
       return { text: null, panel: active };
     }
     if (!text) continue;
@@ -167,14 +180,18 @@ export async function waitCallbackOnPanel(
   prompt: string,
   reply_markup: unknown,
   panel?: PanelRef | null,
+  options?: { parse_mode?: "Markdown" | "HTML" },
 ): Promise<{ data: string | null; panel: PanelRef }> {
-  const active = await ensurePanel(ctx, prompt, reply_markup, panel);
+  const active = await ensurePanel(ctx, prompt, reply_markup, panel, options);
 
   while (true) {
     const update = await conversation.waitFor(["callback_query:data", "message:text"]);
-    if (update.message?.text === "/cancel") {
-      await deleteUserMessage(update);
-      await ensurePanel(update, "❌ عملیات لغو شد.", { inline_keyboard: [] }, active);
+    const text = (update.message?.text ?? "").trim();
+    if (isExitCommand(text)) {
+      if (text === "/cancel") {
+        await deleteUserMessage(update);
+        await ensurePanel(update, "❌ عملیات لغو شد.", { inline_keyboard: [] }, active);
+      }
       return { data: null, panel: active };
     }
 
@@ -263,7 +280,7 @@ export async function waitPhoto(
     }
 
     const text = (update.message?.text ?? "").trim();
-    if (text === "/cancel") return null;
+    if (isExitCommand(text)) return null;
 
     // Text or non-image document
     await ctx.reply(
@@ -347,7 +364,7 @@ export async function waitOptionalPhoto(
     }
 
     const text = (update.message?.text ?? "").trim();
-    if (text === "/cancel") return null;
+    if (isExitCommand(text)) return null;
 
     const lower = text.toLowerCase();
     if (
