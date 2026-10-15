@@ -17,10 +17,16 @@ import {
   pendingImportConfirmKeyboard,
   supplierPendingImportService,
 } from "../../services/suppliers/SupplierPendingImportService";
-import { emojiForLabel } from "../keyboards/grid";
 import { ensurePanel, panelFromCtx, waitTextOnPanel, type PanelRef } from "../conversations/wait";
 import { truncateInlineButtonLabel } from "../../lib/telegramLabel";
 import { parseProfitMarginPercentInput } from "../../services/catalog/profitMarginInput";
+import {
+  pendingCategoryKeyboard,
+  presentPlacementConfirm,
+  presentSubCategoryPicker,
+} from "./supplierPendingAdminUi";
+import { registerPendingImportPlacementConversations } from "./pendingImportPlacementConversation";
+import { suggestPendingImportSubCategoryName } from "../../services/suppliers/pendingImportBrandName";
 
 type ListFilter = "PENDING" | "REJECTED";
 
@@ -34,33 +40,6 @@ async function guardCatalogAdmin(ctx: BotContext): Promise<boolean> {
     return false;
   }
   return true;
-}
-
-function pendingCategoryKeyboard(
-  pendingId: number,
-  categories: Array<{ id: number; name: string }>,
-): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  for (const c of categories) {
-    const label = truncateInlineButtonLabel(`${emojiForLabel(c.name)} ${c.name}`);
-    kb.text(label, `adm:sup:pend:cat:${pendingId}:${c.id}`).row();
-  }
-  kb.text("🔙 بازگشت", `adm:sup:pend:v:${pendingId}`).row();
-  return kb;
-}
-
-function pendingSubCategoryKeyboard(
-  pendingId: number,
-  categoryId: number,
-  subs: Array<{ id: number; name: string }>,
-): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  for (const s of subs) {
-    const label = truncateInlineButtonLabel(`🔹 ${s.name}`);
-    kb.text(label, `adm:sup:pend:sub:${pendingId}:${s.id}`).row();
-  }
-  kb.text("🔙 بازگشت", `adm:sup:pend:accept:${pendingId}`).row();
-  return kb;
 }
 
 function parseListCallback(data: string): { filter: ListFilter; page: number } {
@@ -167,23 +146,6 @@ async function presentPendingList(
     ].join("\n"),
     { parse_mode: "Markdown", reply_markup: kb },
   );
-}
-
-async function presentPlacementConfirm(ctx: BotContext, pendingId: number): Promise<void> {
-  const row = await prisma.supplierPendingImport.findUnique({ where: { id: pendingId } });
-  if (!row || row.status !== SupplierPendingImportStatus.PENDING) {
-    await safeEdit(ctx, "⚠️ این درخواست قبلاً بررسی شده است.", adminSuppliersKeyboard());
-    return;
-  }
-  const summary = await buildPendingPlacementConfirmHtml(row);
-  if (!summary) {
-    await safeEdit(ctx, "⚠️ ابتدا دسته‌بندی را انتخاب کنید.", adminSuppliersKeyboard());
-    return;
-  }
-  await safeEdit(ctx, summary, {
-    parse_mode: "HTML",
-    reply_markup: pendingImportConfirmKeyboard(pendingId),
-  });
 }
 
 export async function setPendingImportMarginConversation(
@@ -298,6 +260,7 @@ export async function setPendingImportMarginConversation(
 
 export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
   const admin = new Composer<BotContext>();
+  registerPendingImportPlacementConversations(bot);
   bot.use(createConversation(setPendingImportMarginConversation, "setPendingImportMargin"));
 
   admin.callbackQuery("adm:sup:pending", async (ctx) => {
@@ -408,18 +371,64 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
       return;
     }
 
-    await safeEdit(
-      ctx,
-      [
-        "📁 <b>انتخاب زیردسته / سرویس</b>",
-        "",
-        "زیردسته مناسب را انتخاب کنید:",
-      ].join("\n"),
-      {
-        parse_mode: "HTML",
-        reply_markup: pendingSubCategoryKeyboard(pendingId, categoryId, subs),
-      },
+    await presentSubCategoryPicker(ctx, pendingId, categoryId);
+  });
+
+  admin.callbackQuery(/^adm:sup:pend:catadd:(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const pendingId = Number(ctx.match![1]);
+    ctx.session.adminTargetId = pendingId;
+    try {
+      await ctx.conversation.exitAll();
+    } catch {
+      /* ignore */
+    }
+    await ctx.conversation.enter("pendingImportAddCategory", pendingId);
+  });
+
+  admin.callbackQuery(/^adm:sup:pend:subadd:(\d+):(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const pendingId = Number(ctx.match![1]);
+    const categoryId = Number(ctx.match![2]);
+    ctx.session.adminTargetId = pendingId;
+    ctx.session.adminCmsCategoryId = categoryId;
+    try {
+      await ctx.conversation.exitAll();
+    } catch {
+      /* ignore */
+    }
+    await ctx.conversation.enter("pendingImportAddSubCategory", pendingId, categoryId);
+  });
+
+  admin.callbackQuery(/^adm:sup:pend:subbrand:(\d+):(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const pendingId = Number(ctx.match![1]);
+    const categoryId = Number(ctx.match![2]);
+    const row = await prisma.supplierPendingImport.findUnique({ where: { id: pendingId } });
+    const suggested = row ? suggestPendingImportSubCategoryName(row) : null;
+    if (!suggested) {
+      await ctx.answerCallbackQuery({ text: "پیشنهادی موجود نیست.", show_alert: true });
+      return;
+    }
+
+    const sub = await catalogService.createSubCategory({
+      name: suggested,
+      categoryId,
+      isAdminManaged: true,
+    });
+    const draft = await supplierPendingImportService.savePlacementDraft(
+      pendingId,
+      categoryId,
+      sub.id,
     );
+    if (!draft.ok) {
+      await ctx.answerCallbackQuery({ text: draft.message, show_alert: true });
+      return;
+    }
+    await presentPlacementConfirm(ctx, pendingId);
   });
 
   admin.callbackQuery(/^adm:sup:pend:sub:(\d+):(\d+)$/, async (ctx) => {

@@ -87,22 +87,35 @@ export class CatalogService {
     });
   }
 
-  async createCategory(name: string): Promise<Category> {
+  async createCategory(
+    name: string,
+    options?: { isAdminManaged?: boolean },
+  ): Promise<Category> {
     const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("Category name is required");
+    }
     const existing = await prisma.category.findFirst({
       where: { name: trimmed },
     });
     if (existing) {
-      if (!existing.isActive) {
+      if (!existing.isActive || options?.isAdminManaged) {
         return prisma.category.update({
           where: { id: existing.id },
-          data: { isActive: true },
+          data: {
+            isActive: true,
+            isAdminManaged: options?.isAdminManaged ? true : existing.isAdminManaged,
+          },
         });
       }
       return existing;
     }
     return prisma.category.create({
-      data: { name: trimmed, isActive: true },
+      data: {
+        name: trimmed,
+        isActive: true,
+        isAdminManaged: options?.isAdminManaged === true,
+      },
     });
   }
 
@@ -170,6 +183,7 @@ export class CatalogService {
     description?: string | null;
     coverImageUrl?: string | null;
     sortOrder?: number;
+    isAdminManaged?: boolean;
   }): Promise<SubCategoryRecord> {
     const description =
       typeof data.description === "string" && data.description.trim().length > 0
@@ -192,6 +206,7 @@ export class CatalogService {
         where: { id: existing.id },
         data: {
           isActive: true,
+          isAdminManaged: data.isAdminManaged ? true : existing.isAdminManaged,
           description: description ?? existing.description,
           coverImageUrl: coverImageUrl ?? existing.coverImageUrl,
           sortOrder: data.sortOrder ?? existing.sortOrder,
@@ -207,6 +222,7 @@ export class CatalogService {
         coverImageUrl,
         sortOrder: data.sortOrder ?? 0,
         isActive: true,
+        isAdminManaged: data.isAdminManaged === true,
       },
     });
   }

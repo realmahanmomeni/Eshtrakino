@@ -6,6 +6,7 @@ import {
   SHOP_TAXONOMY,
 } from "./brandCatalog";
 import { polishCustomerProductTitle } from "./productTitlePolish";
+import { isAutomaticHierarchyBlocked } from "./catalogHierarchyGuard";
 
 export type HardReassignRule = {
   pattern: RegExp;
@@ -17,7 +18,7 @@ export type HardReassignRule = {
 export const HARD_REASSIGN_RULES: HardReassignRule[] = [
   {
     pattern: /quillbot|کوییل.?بات/i,
-    taxonomyKey: "ai_tools",
+    taxonomyKey: "education",
     subCategoryName: "QuillBot | کوییل‌بات",
     cleanName: "کوییل‌بات پریمیوم",
   },
@@ -149,6 +150,14 @@ export function findHardReassignRule(productName: string, description?: string |
 }
 
 export async function applyHardReassignRule(productId: number, rule: HardReassignRule): Promise<void> {
+  const existing = await prisma.product.findUnique({
+    where: { id: productId },
+    include: { category: true, subCategory: true },
+  });
+  if (existing && isAutomaticHierarchyBlocked(existing)) {
+    return;
+  }
+
   const taxonomy = taxonomyByKey(rule.taxonomyKey);
   const category = await ensureTaxonomyCategory(taxonomy);
   const sub = await ensureSubCategoryForBrand(category.id, rule.subCategoryName);
@@ -189,6 +198,7 @@ export async function purgeMisplacedCatalogProducts(): Promise<number> {
   });
 
   for (const product of products) {
+    if (isAutomaticHierarchyBlocked(product)) continue;
     const name = product.name;
     const hard = findHardReassignRule(name, product.description);
     if (hard) {
@@ -249,6 +259,15 @@ export async function purgeDuplicateSupplierProducts(): Promise<number> {
   });
 
   const groups = new Map<string, number[]>();
+  const lockedIds = new Set(
+    (
+      await prisma.product.findMany({
+        where: { hierarchyLocked: true },
+        select: { id: true },
+      })
+    ).map((p) => p.id),
+  );
+
   for (const m of mappings) {
     const key = `${m.supplierProductKey}::${m.supplierVariantKey ?? ""}::${normalizeName(m.product.name)}`;
     const list = groups.get(key) ?? [];
@@ -260,8 +279,12 @@ export async function purgeDuplicateSupplierProducts(): Promise<number> {
   for (const ids of groups.values()) {
     if (ids.length < 2) continue;
     ids.sort((a, b) => a - b);
-    const keep = ids[0]!;
+    const keep =
+      ids.find((id) => lockedIds.has(id)) ??
+      ids.find((id) => id === ids[0]) ??
+      ids[0]!;
     for (const dupId of ids.slice(1)) {
+      if (dupId === keep || lockedIds.has(dupId)) continue;
       const invoiceCount = await prisma.invoice.count({ where: { productId: dupId } });
       if (invoiceCount > 0) {
         await prisma.product.update({ where: { id: dupId }, data: { isActive: false } });
@@ -285,7 +308,11 @@ export async function purgeDuplicateSupplierProducts(): Promise<number> {
   for (const ids of byName.values()) {
     if (ids.length < 2) continue;
     ids.sort((a, b) => a - b);
+    const keep =
+      ids.find((id) => lockedIds.has(id)) ??
+      ids[0]!;
     for (const dupId of ids.slice(1)) {
+      if (dupId === keep || lockedIds.has(dupId)) continue;
       const hasMapping = await prisma.supplierProductMapping.findUnique({
         where: { productId: dupId },
       });
@@ -309,9 +336,12 @@ function normalizeName(name: string): string {
 }
 
 export async function polishAllCatalogProductTitles(): Promise<number> {
-  const products = await prisma.product.findMany({ select: { id: true, name: true } });
+  const products = await prisma.product.findMany({
+    select: { id: true, name: true, hierarchyLocked: true },
+  });
   let n = 0;
   for (const p of products) {
+    if (p.hierarchyLocked) continue;
     const hard = findHardReassignRule(p.name);
     const polished = hard?.cleanName ?? polishCustomerProductTitle(p.name);
     if (polished !== p.name) {
@@ -337,6 +367,7 @@ export async function reassignProductsFromOtherBuckets(): Promise<number> {
 
   let moved = 0;
   for (const product of products) {
+    if (isAutomaticHierarchyBlocked(product)) continue;
     const inOtherCat = isOtherCategory(product.category.name);
     const inOtherSub = product.subCategory ? isOtherSubCategory(product.subCategory.name) : false;
     const rule =
@@ -365,6 +396,7 @@ export async function purgeOtherShopCategories(): Promise<number> {
         { name: { contains: "سایر" } },
       ],
       products: { none: {} },
+      isAdminManaged: false,
     },
   });
 
@@ -380,6 +412,7 @@ export async function purgeOtherShopCategories(): Promise<number> {
 
   let removed = 0;
   for (const cat of otherCats) {
+    if (cat.isAdminManaged) continue;
     if (cat._count.products > 0) continue;
     await prisma.subCategory.deleteMany({ where: { categoryId: cat.id } });
     await prisma.category.delete({ where: { id: cat.id } });

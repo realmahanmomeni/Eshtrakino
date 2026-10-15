@@ -90,7 +90,9 @@ model Category {
   name          String
   description   String?       @db.Text
   bannerUrl     String?
-  isActive      Boolean       @default(true)
+  isActive        Boolean       @default(true)
+  /// When true, startup taxonomy/purge must not delete or bulk-reassign this category.
+  isAdminManaged  Boolean       @default(false)
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
   products      Product[]
@@ -108,8 +110,10 @@ model SubCategory {
   categoryId    Int
   category      Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   products      Product[]
-  sortOrder     Int       @default(0)
-  isActive      Boolean   @default(true)
+  sortOrder       Int       @default(0)
+  isActive        Boolean   @default(true)
+  /// When true, empty subcategories are kept and products here skip auto-reassign.
+  isAdminManaged  Boolean   @default(false)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -141,6 +145,8 @@ model Product {
   /// JSON string array, e.g. ["Email","Password"]
   requiredFields         Json                    @default("[]")
   isActive               Boolean                 @default(true)
+  /// Admin-confirmed catalog placement — skip startup hard-reassign / title overrides.
+  hierarchyLocked        Boolean                 @default(false)
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   category               Category                @relation(fields: [categoryId], references: [id])
