@@ -20,6 +20,11 @@ import { exchangeRateService, convertUsdToToman } from "../../services/exchangeR
 import { Callbacks } from "../keyboards/callbacks";
 import { starsPricingService, normalizeNumerals } from "../../services/catalog/starsPricingService";
 import {
+  buildSupplierMarginSummaryHtml,
+  supplierMarginPriceKeyboard,
+} from "./supplierPriceAdmin";
+import { isSupplierMarginAdminProduct } from "../../services/catalog/profitMarginService";
+import {
   adminCatalogKeyboard,
   adminSubCategoriesKeyboard,
   adminProductPickKeyboard,
@@ -807,15 +812,26 @@ export async function editProductConversation(
           ? `💵 قیمت: *${formatToman(product.price)}* ($${prod.usdPrice})`
           : `💵 قیمت: *${formatToman(product.price)}*`;
 
-      const menu = await waitCallbackOnPanel(
-        conversation,
-        ctx,
-        renderAdminProductCardText(product, stockCount),
-        adminProductDetailKeyboard(product),
-        panel,
+      let action: string | undefined;
+      const skipMenuForPrice = await conversation.external(
+        (c) => c.session.adminOpenProductPriceEdit === true,
       );
-      panel = menu.panel;
-      const action = menu.data;
+      if (skipMenuForPrice) {
+        await conversation.external((c) => {
+          c.session.adminOpenProductPriceEdit = undefined;
+        });
+        action = ConvCb.editProductPrice;
+      } else {
+        const menu = await waitCallbackOnPanel(
+          conversation,
+          ctx,
+          renderAdminProductCardText(product, stockCount),
+          adminProductDetailKeyboard(product),
+          panel,
+        );
+        panel = menu.panel;
+        action = menu.data ?? undefined;
+      }
 
       if (!action || action === ConvCb.cancel) {
         await clearProductSession(conversation);
@@ -1012,6 +1028,36 @@ export async function editProductConversation(
       }
 
       if (action === ConvCb.editProductPrice) {
+        const supplierMargin = await conversation.external(() =>
+          isSupplierMarginAdminProduct(productId!),
+        );
+        if (supplierMargin) {
+          const summary = await conversation.external(() =>
+            buildSupplierMarginSummaryHtml(productId!),
+          );
+          if (summary) {
+            const marginPick = await waitCallbackOnPanel(
+              conversation,
+              ctx,
+              summary,
+              supplierMarginPriceKeyboard(productId!),
+              panel,
+              { parse_mode: "HTML" },
+            );
+            panel = marginPick.panel;
+            const data = marginPick.data;
+            if (
+              data &&
+              (data.startsWith("adm:prd:margin:") ||
+                data === Callbacks.adminEditProduct(productId!) ||
+                data === Callbacks.adminViewProduct(productId!))
+            ) {
+              return;
+            }
+          }
+          continue;
+        }
+
         const prod = product as typeof product & { currency?: string; usdPrice?: number | null };
         const currentPriceDisplay =
           prod.currency === "USD" && prod.usdPrice != null

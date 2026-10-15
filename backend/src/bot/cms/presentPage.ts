@@ -30,6 +30,7 @@ import {
 import { injectAdminControls } from "./injectAdminControls";
 import { safeEditMedia, safeDeleteMessage } from "../utils/safeEdit";
 import { panelFromCtx } from "../conversations/wait";
+import { lazyCacheService } from "../../services/catalog/LazyCacheService";
 
 export type PresentMode = "reply" | "edit";
 
@@ -96,11 +97,15 @@ export async function resolveCmsKeyboard(
       return mainMenuKeyboard(pending, isAdmin, layout);
 
     case "shop": {
-      const categories = await catalogService.listActiveCategories();
+      const categories = await catalogService.listShopCategories();
       if (categories.length === 0) {
         return mainMenuKeyboard(false, isAdmin, layout);
       }
-      return categoriesKeyboard(categories, layout);
+      const { buildShopCategoryOutOfStockMap } = await import("../utils/catalogUi.js");
+      const oosMap = await buildShopCategoryOutOfStockMap(categories);
+      const shopLayout = layout === 1 ? 1 : 2;
+      const { shopRootMenuKeyboard } = await import("../keyboards/builders.js");
+      return shopRootMenuKeyboard(categories, shopLayout, { outOfStockByCategoryId: oosMap });
     }
 
     case "account":
@@ -242,6 +247,10 @@ export async function presentCmsPage(
 ): Promise<void> {
   if (!ctx.from) return;
 
+  if (pageKey === "home" || pageKey === "shop") {
+    lazyCacheService.maybeRefreshOnBrowse();
+  }
+
   const page = await pageContentService.getPage(pageKey);
   const baseText = page.textContent;
   const layout = page.layoutColumns;
@@ -292,7 +301,15 @@ export async function presentCmsPage(
         "shop",
       );
     } else {
-      kb = injectAdminControls(ctx, categoriesKeyboard(categories, layout), "shop");
+      const { buildShopCategoryOutOfStockMap } = await import("../utils/catalogUi.js");
+      const { shopRootMenuKeyboard } = await import("../keyboards/builders.js");
+      const oosMap = await buildShopCategoryOutOfStockMap(categories);
+      const shopLayout = layout === 1 ? 1 : 2;
+      kb = injectAdminControls(
+        ctx,
+        shopRootMenuKeyboard(categories, shopLayout, { outOfStockByCategoryId: oosMap }),
+        "shop",
+      );
     }
     await deliverCmsMessage(ctx, mode, pageKey, page, caption, kb);
     return;

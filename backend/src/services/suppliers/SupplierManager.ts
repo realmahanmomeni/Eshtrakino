@@ -18,6 +18,11 @@ export class SupplierManager {
       if (k.toLowerCase() === norm) return v;
     }
 
+    if (/canboso|کنبوسو/i.test(norm)) {
+      const cb = this.adapters.get("Canboso");
+      if (cb) return cb;
+    }
+
     if (/quantum|کوانتوم/i.test(norm)) {
       const qv = this.adapters.get("QuantumVault");
       if (qv) return qv;
@@ -82,7 +87,8 @@ export class SupplierManager {
     try {
       // 1. Pre-purchase price protection
       if (mapping.maxPriceLimit) {
-        const productDetails = await adapter.getProductDetails(apiKey.encryptedKey, mapping.supplierProductKey);
+        const plainKey = SupplierManager.decryptKey(apiKey.encryptedKey);
+        const productDetails = await adapter.getProductDetails(plainKey, mapping.supplierProductKey);
         if (!productDetails) {
           throw new SupplierProductNotFoundError(`Product ${mapping.supplierProductKey} not found at supplier before purchase.`);
         }
@@ -105,17 +111,32 @@ export class SupplierManager {
         }
       }
 
-      // Execute the purchase defensively
-      const result = await adapter.purchase(apiKey.encryptedKey, mapping);
+      const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      const userInputData =
+        invoice?.userInputData && typeof invoice.userInputData === "object"
+          ? (invoice.userInputData as Record<string, string>)
+          : undefined;
 
-      // Successfully purchased, update order
+      const plainKey = SupplierManager.decryptKey(apiKey.encryptedKey);
+      const result = await adapter.purchase(plainKey, mapping, undefined, {
+        internalInvoiceId: invoiceId,
+        userInputData,
+      });
+
+      const orderStatus = result.isProcessing
+        ? SupplierOrderStatus.PENDING
+        : SupplierOrderStatus.SUCCESS;
+
       await prisma.supplierOrder.update({
         where: { id: supplierOrder.id },
         data: {
-          status: SupplierOrderStatus.SUCCESS,
+          status: orderStatus,
           supplierOrderId: result.supplierOrderId,
           costAmount: result.costAmount,
           deliveryPayload: result.deliveryPayload,
+          errorMessage: result.isProcessing
+            ? result.status ?? "processing"
+            : null,
         },
       });
 

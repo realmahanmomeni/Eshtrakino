@@ -41,8 +41,8 @@ export function formatCmsCategoryListMessage(categories: Category[], banner?: st
 }
 
 export function formatCmsCategoryViewMessage(category: Category, banner?: string): string {
-  const hasBanner = Boolean((category as any).bannerUrl?.trim());
-  const desc = (category as any).description?.trim() || "تنظیم نشده (پیش‌فرض)";
+  const hasBanner = Boolean(category.bannerUrl?.trim());
+  const desc = category.description?.trim() || "تنظیم نشده (پیش‌فرض)";
   const body = [
     "📁 *جزئیات و بنر دسته*",
     "",

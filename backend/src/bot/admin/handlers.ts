@@ -2,6 +2,7 @@ import { Composer, type Bot } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
 import { DeliveryType, InvoiceStatus, TicketStatus } from "@prisma/client";
 import type { BotContext } from "../context";
+import { createInitialSession } from "../context";
 import { adminOnlyMiddleware } from "./middleware";
 import { hasAnyAdminAccess, hasPermission } from "./rbac";
 import { rbacAdmin, rbacAddAdminConversation } from "./rbacHandlers";
@@ -33,6 +34,7 @@ import {
   adminSuppliersKeyboard,
 } from "./keyboards";
 import { renderAdminProductCardText, getDeliveryModeCaption } from "./catalog";
+import { exitAllConversations } from "../utils/conversations";
 import { Callbacks } from "../keyboards/callbacks";
 import { catalogService } from "../../services/catalog/CatalogService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
@@ -116,6 +118,12 @@ import {
 import { isPageKey, pageContentService } from "../../services/cms/PageContentService";
 import { safeEdit, safeEditMedia } from "../utils/safeEdit";
 import { panelFromCtx } from "../conversations/wait";
+import { canbosoDispatchService } from "../../services/suppliers/CanbosoDispatchService";
+import {
+  presentSupplierMarginPricePanel,
+  setProductProfitMarginConversation,
+} from "./supplierPriceAdmin";
+import { isSupplierMarginAdminProduct } from "../../services/catalog/profitMarginService";
 
 const RECEIPT_STATUS_LABELS: Record<string, string> = {
   AWAITING_APPROVAL: "در انتظار تایید",
@@ -167,6 +175,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   bot.use(createConversation(editSubCategoryConversation, "editSubCategory"));
   bot.use(createConversation(addProductConversation, "addProduct"));
   bot.use(createConversation(editProductConversation, "editProduct"));
+  bot.use(createConversation(setProductProfitMarginConversation, "setProductProfitMargin"));
   bot.use(createConversation(restockProductConversation, "restockProduct"));
   bot.use(createConversation(setProductStockAlertConversation, "setProductStockAlert"));
   bot.use(createConversation(setProductDurationConversation, "setProductDuration"));
@@ -241,7 +250,8 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     }
   });
 
-  const admin = new Composer<BotContext>().filter((ctx) => {
+  const adminBase = new Composer<BotContext>();
+  const admin = adminBase.filter((ctx) => {
     const data = ctx.callbackQuery?.data;
     return typeof data === "string" && data.startsWith("adm:");
   });
@@ -1389,16 +1399,15 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     );
   });
 
-  admin.callbackQuery(/^adm:prd:edit:(\d+)$/, async (ctx) => {
+  admin.callbackQuery(/^adm:prd:(?:edit|view):(\d+)$/, async (ctx) => {
     const id = Number(ctx.match![1]);
+    if (!ctx.session) {
+      ctx.session = createInitialSession();
+    }
     ctx.session.adminTargetId = id;
     ctx.session.adminTargetType = "product";
     await ctx.answerCallbackQuery();
-    try {
-      await ctx.conversation.exitAll();
-    } catch {
-      /* ignore */
-    }
+    await exitAllConversations(ctx);
     await ctx.conversation.enter("editProduct");
   });
 
@@ -1558,12 +1567,48 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     ctx.session.adminTargetId = id;
     ctx.session.adminTargetType = "product";
     await ctx.answerCallbackQuery();
+    await exitAllConversations(ctx);
+
+    if (await isSupplierMarginAdminProduct(id)) {
+      await presentSupplierMarginPricePanel(ctx, id);
+      return;
+    }
+
+    ctx.session.adminOpenProductPriceEdit = true;
     try {
       await ctx.conversation.exitAll();
     } catch {
       /* ignore */
     }
     await ctx.conversation.enter("editProduct");
+  });
+
+  admin.callbackQuery(/^adm:prd:margin:edit:(\d+)$/, async (ctx) => {
+    const productId = Number(ctx.match![1]);
+    if (!ctx.session) {
+      ctx.session = createInitialSession();
+    }
+    ctx.session.adminTargetId = productId;
+    ctx.session.adminTargetType = "product";
+    await ctx.answerCallbackQuery({ text: "در حال باز کردن…" });
+    await exitAllConversations(ctx);
+    await ctx.conversation.enter("setProductProfitMargin", productId);
+  });
+
+  admin.callbackQuery(/^adm:prd:margin:live:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    const { refreshSupplierMarginAndPresentPanel } = await import("./supplierPriceAdmin.js");
+    const { ok } = await refreshSupplierMarginAndPresentPanel(ctx, id);
+    if (ok) {
+      await ctx.answerCallbackQuery({
+        text: "✅ قیمت دلاری و تومانی با موفقیت به‌روزرسانی شد.",
+      });
+    } else {
+      await ctx.answerCallbackQuery({
+        text: "استعلام ناموفق بود. دوباره تلاش کنید.",
+        show_alert: true,
+      });
+    }
   });
 
   admin.callbackQuery(Callbacks.adminDelProductMenu, async (ctx) => {
@@ -2118,5 +2163,75 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await ctx.conversation.enter("adminReplyTicket");
   });
 
-  bot.use(admin);
+  admin.callbackQuery(/^adm:dispatch:(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "در حال ارسال به تامین‌کننده…" }).catch(() => {});
+
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true }).catch(() => {});
+      return;
+    }
+
+    const invoiceId = Number(ctx.match![1]);
+    const editAdminMessage = async (text: string) => {
+      await safeEdit(ctx, text, { parse_mode: "Markdown", reply_markup: undefined });
+    };
+
+    const result = await canbosoDispatchService.executeDispatch(
+      ctx.api,
+      invoiceId,
+      editAdminMessage,
+    );
+
+    if (result.ok) {
+      await ctx.answerCallbackQuery({ text: "✅ تحویل شد" }).catch(() => {});
+      return;
+    }
+
+    await ctx.answerCallbackQuery({
+      text: `❌ ${result.message}`,
+      show_alert: true,
+    }).catch(() => {});
+
+    await safeEdit(
+      ctx,
+      [
+        "📦 *سفارش تامین‌کننده*",
+        "",
+        `❌ خطا در خرید از تامین‌کننده: ${result.message}`,
+        "",
+        "کیف پول تامین‌کننده را بررسی کنید و مجدداً دکمه ارسال را بزنید.",
+      ].join("\n"),
+      {
+        parse_mode: "Markdown",
+        reply_markup: ctx.callbackQuery.message?.reply_markup,
+      },
+    ).catch(() => {});
+  });
+
+  admin.callbackQuery(/^adm:cancel_order:(\d+)$/, async (ctx) => {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true }).catch(() => {});
+      return;
+    }
+
+    const invoiceId = Number(ctx.match![1]);
+    const editAdminMessage = async (text: string) => {
+      await safeEdit(ctx, text, { parse_mode: "Markdown", reply_markup: undefined });
+    };
+
+    const result = await canbosoDispatchService.cancelAndRefundWallet(
+      ctx.api,
+      invoiceId,
+      editAdminMessage,
+    );
+
+    if (result.ok) {
+      await ctx.answerCallbackQuery({ text: "سفارش لغو و مبلغ بازگشت داده شد" }).catch(() => {});
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: result.message, show_alert: true }).catch(() => {});
+  });
+
+  bot.use(adminBase);
 }

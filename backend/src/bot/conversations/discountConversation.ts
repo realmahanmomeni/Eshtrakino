@@ -1,6 +1,6 @@
 import type { EshtrakinoConversation, SessionContext } from "../context";
 import { discountService } from "../../services/discount/DiscountService";
-import { invoiceService } from "../../services/invoices/InvoiceService";
+import { invoiceService, renderInvoiceAmountLines } from "../../services/invoices/InvoiceService";
 import { buildCheckoutPaymentKeyboard } from "../keyboards/paymentChoice";
 import { formatToman } from "../../lib/money";
 import { toPlain } from "../../lib/plain";
@@ -81,7 +81,7 @@ export async function applyDiscountConversation(
         return buildCheckoutPaymentKeyboard(
           invoice.id,
           formatToman(user.balance),
-          { hasDiscount: Boolean((invoice as any).discountCode) },
+          { hasDiscount: Boolean(invoice.discountCode) },
         );
       });
 
@@ -119,7 +119,7 @@ export async function applyDiscountConversation(
         return buildCheckoutPaymentKeyboard(
           invoice.id,
           formatToman(user.balance),
-          { hasDiscount: Boolean((invoice as any).discountCode) },
+          { hasDiscount: Boolean(invoice.discountCode) },
         );
       });
 
@@ -186,17 +186,16 @@ export async function applyDiscountConversation(
         "💳 *انتخاب روش پرداخت*",
         "",
         `🧾 فاکتور: *#${invoice.id}*`,
-        `💵 مبلغ اولیه: ~${formatToman((result.invoice as any).originalAmount)}~`,
-        `🏷 تخفیف (${result.calc.percentage}٪): -${formatToman(result.calc.discountAmount)}`,
-        `💵 مبلغ نهایی: *${formatToman(result.invoice.amount)}*`,
+        ...renderInvoiceAmountLines(result.invoice),
         "",
         "روش پرداخت را انتخاب کنید:",
       ].join("\n");
 
       panel = await ensurePanel(ctx, invoiceMsg, refreshedKb, panel);
       return;
-    } catch (err: any) {
-      const errMsg = err?.message || "کد تخفیف وارد شده معتبر نیست.";
+    } catch (err: unknown) {
+      const errMsg =
+        err instanceof Error ? err.message : "کد تخفیف وارد شده معتبر نیست.";
       const retryPrompt = [
         `❌ *خطا:* ${errMsg}`,
         "",

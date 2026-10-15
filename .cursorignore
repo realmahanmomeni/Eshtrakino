@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.git/
+*.log
+backend/node_modules/
+backend/dist/

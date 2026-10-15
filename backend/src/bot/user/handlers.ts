@@ -9,6 +9,7 @@ import {
   walletTopUpConversation,
 } from "./conversations";
 import { presentCmsPage } from "../cms/presentPage";
+import { exitAllConversations } from "../utils/conversations";
 
 export function registerUserHandlers(bot: Bot<BotContext>): void {
   bot.use(createConversation(collectCredentialsConversation, "collectCredentials"));
@@ -34,11 +35,7 @@ export function registerUserHandlers(bot: Bot<BotContext>): void {
 
     ctx.session.walletTopUpMethodId = methodId;
     await ctx.answerCallbackQuery();
-    try {
-      await ctx.conversation.exitAll();
-    } catch {
-      /* ignore */
-    }
+    await exitAllConversations(ctx);
     await ctx.conversation.enter("walletTopUp");
   });
 
@@ -46,11 +43,7 @@ export function registerUserHandlers(bot: Bot<BotContext>): void {
   bot.callbackQuery(Callbacks.walletTopUp, async (ctx) => {
     ctx.session.walletTopUpMethodId = undefined;
     await ctx.answerCallbackQuery();
-    try {
-      await ctx.conversation.exitAll();
-    } catch {
-      /* ignore */
-    }
+    await exitAllConversations(ctx);
     await ctx.conversation.enter("walletTopUp");
   });
 
@@ -58,19 +51,13 @@ export function registerUserHandlers(bot: Bot<BotContext>): void {
     const invoiceId = Number(ctx.match![1]);
     ctx.session.credentialsInvoiceId = invoiceId;
     await ctx.answerCallbackQuery();
-
-    try {
-      await ctx.conversation.exitAll();
-    } catch {
-      /* ignore */
-    }
-
+    await exitAllConversations(ctx);
     await ctx.conversation.enter("collectCredentials");
   });
 
   bot.callbackQuery(/^user:tkt:reply:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    try { await ctx.conversation.exitAll(); } catch { /* ignore */ }
+    await exitAllConversations(ctx);
     await ctx.conversation.enter("support");
   });
 }

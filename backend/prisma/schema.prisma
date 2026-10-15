@@ -123,6 +123,10 @@ model Product {
   price                  Decimal                 @db.Decimal(14, 2)
   currency               String                  @default("TOMAN")
   usdPrice               Float?
+  /// Latest supplier cost in USD (base for margin pricing)
+  supplierCostUsd        Float?
+  /// Per-product profit margin override (%). Falls back to system default when null.
+  profitMarginPercent    Float?
   categoryId             Int
   subCategoryId          Int?
   deliveryType           DeliveryType
@@ -321,7 +325,9 @@ model DiscountCode {
 
 enum SupplierOrderStatus {
   PENDING
+  PENDING_ADMIN_DISPATCH
   SUCCESS
+  COMPLETED
   FAILED
   UNCERTAIN
 }

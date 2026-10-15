@@ -28,6 +28,13 @@ export const DEFAULT_STARS_UNIT_USD_PRICE = 0.0171;
 export const CATALOG_BOOTSTRAP_DONE_KEY = "CATALOG_BOOTSTRAP_DONE";
 /** Flag indicating one-time migration for ChatGPT dedicated SubCategory is done */
 export const CHATGPT_SUBCAT_MIGRATED_KEY = "CHATGPT_SUBCAT_MIGRATED";
+/** Default markup % over supplier USD cost for margin-priced products */
+export const DEFAULT_PROFIT_MARGIN_PERCENT_KEY = "DEFAULT_PROFIT_MARGIN_PERCENT";
+export const DEFAULT_PROFIT_MARGIN_PERCENT = 20;
+/** Unix ms — last supplier catalog/stock sync (lazy cache) */
+export const LAST_CATALOG_SYNC_AT_KEY = "LAST_CATALOG_SYNC_AT";
+/** Unix ms — last live USD/Toman FX fetch (lazy cache) */
+export const LAST_FX_RATE_SYNC_AT_KEY = "LAST_FX_RATE_SYNC_AT";
 
 export class SettingsService {
   async getSetting(key: string): Promise<string | null> {

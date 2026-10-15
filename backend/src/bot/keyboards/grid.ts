@@ -108,7 +108,7 @@ export function emojiForLabel(name: string): string {
 export function deliveryTypeLabel(type: string): string {
   switch (type) {
     case "SUPPLIER_AUTO":
-      return "کوانتوم بات 🤖";
+      return "تحویل دیجیتال فوری ⚡";
     case "MANUAL":
       return "تحویل دستی ✋";
     case "CREDENTIALS_REQUIRED":

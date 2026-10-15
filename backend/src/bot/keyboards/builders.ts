@@ -15,6 +15,7 @@ import {
   getCategoryCustomEmojiId,
   getSubCategoryCustomEmojiId,
 } from "./buttonEmojis";
+import { withOutOfStockPrefix } from "../../services/catalog/catalogAvailability";
 
 /**
  * Layout order (top → bottom):
@@ -77,11 +78,13 @@ export function mainMenuKeyboard(
 
 export function categoriesKeyboard(
   categories: Category[],
-  layoutColumns: 1 | 2 = 1,
+  layoutColumns: 1 | 2 = 2,
+  options?: { outOfStockByCategoryId?: Map<number, boolean> },
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   const buttons: KeyboardButton[] = categories.map((c) => {
-    const label = c.name;
+    const fullyOos = options?.outOfStockByCategoryId?.get(c.id) ?? false;
+    const label = withOutOfStockPrefix(c.name, fullyOos);
     return {
       text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
       data: Callbacks.category(c.id),
@@ -98,6 +101,64 @@ export function categoriesKeyboard(
     data: Callbacks.mainMenu,
     icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
   });
+  return kb;
+}
+
+const SHOP_SEARCH_BTN = "🔍 جستجو در محصولات";
+const SHOP_REFRESH_BTN = "🔄 بروزرسانی قیمت و موجودی";
+const SHOP_BACK_MAIN_BTN = "🔙 بازگشت به منوی اصلی";
+
+/** Root shop menu: categories → search → refresh → back to main. */
+export function shopRootMenuKeyboard(
+  categories: Category[],
+  layoutColumns: 1 | 2 = 2,
+  options?: { outOfStockByCategoryId?: Map<number, boolean> },
+): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  const buttons: KeyboardButton[] = categories.map((c) => {
+    const fullyOos = options?.outOfStockByCategoryId?.get(c.id) ?? false;
+    const label = withOutOfStockPrefix(c.name, fullyOos);
+    return {
+      text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
+      data: Callbacks.category(c.id),
+      icon_custom_emoji_id: getCategoryCustomEmojiId(c.name),
+    };
+  });
+  if (layoutColumns === 2) {
+    appendTwoColumn(kb, buttons);
+  } else {
+    appendOneColumn(kb, buttons);
+  }
+  appendFullWidthCta(kb, SHOP_SEARCH_BTN, Callbacks.shopSearch, BUTTON_CUSTOM_EMOJIS.SEARCH);
+  kb.row().text(SHOP_REFRESH_BTN, Callbacks.shopRefresh);
+  appendNavBar(kb, {
+    text: SHOP_BACK_MAIN_BTN,
+    data: Callbacks.mainMenu,
+    icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
+  });
+  return kb;
+}
+
+export function searchResultsKeyboard(
+  products: Array<{ id: number; name: string; outOfStock: boolean }>,
+  _displayQuery: string,
+): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const p of products) {
+    const customEmojiId = getProductCustomEmojiId(p.name);
+    const namePart = truncateLabel(cleanProductLabel(p.name), 35);
+    const label = withOutOfStockPrefix(namePart, p.outOfStock);
+    appendFullWidthCta(
+      kb,
+      label.length > 64 ? `${label.slice(0, 61)}…` : label,
+      Callbacks.viewProduct(p.id),
+      customEmojiId,
+    );
+  }
+  kb
+    .row()
+    .text(SHOP_SEARCH_BTN, Callbacks.shopSearch)
+    .text("🛍 بازگشت به فروشگاه", Callbacks.shopRoot);
   return kb;
 }
 
@@ -119,15 +180,20 @@ function cleanProductLabel(name: string): string {
 }
 
 export function categoryContentsKeyboard(
-  subCategories: Array<{ id: number; name: string }>,
-  standaloneProducts: Array<{ id: number; name: string }> = [],
-  options?: { hasPendingInvoice?: boolean; layoutColumns?: 1 | 2 },
+  subCategories: Array<{ id: number; name: string; outOfStock?: boolean }>,
+  standaloneProducts: Array<{ id: number; name: string; outOfStock?: boolean }> = [],
+  options?: {
+    hasPendingInvoice?: boolean;
+    layoutColumns?: 1 | 2;
+    categoryId?: number;
+  },
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
 
   if (subCategories.length > 0) {
     const subCatButtons: KeyboardButton[] = subCategories.map((s) => {
-      const label = truncateLabel(cleanProductLabel(s.name), 35);
+      const namePart = truncateLabel(cleanProductLabel(s.name), 35);
+      const label = withOutOfStockPrefix(namePart, Boolean(s.outOfStock));
       return {
         text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
         data: Callbacks.subCategoryView(s.id),
@@ -141,8 +207,9 @@ export function categoryContentsKeyboard(
     const prodButtons: KeyboardButton[] = standaloneProducts.map((p) => {
       const customEmojiId = getProductCustomEmojiId(p.name);
       const namePart = truncateLabel(cleanProductLabel(p.name), 35);
+      const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
       return {
-        text: namePart.length > 64 ? `${namePart.slice(0, 61)}…` : namePart,
+        text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
         data: Callbacks.viewProduct(p.id),
         icon_custom_emoji_id: customEmojiId,
       };
@@ -154,11 +221,11 @@ export function categoryContentsKeyboard(
     }
   }
 
-  // Bottom action buttons
-  kb.row().switchInlineCurrent(
-    { text: "جستجو در محصولات", icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.SEARCH },
-    "",
-  );
+  appendFullWidthCta(kb, SHOP_SEARCH_BTN, Callbacks.shopSearch, BUTTON_CUSTOM_EMOJIS.SEARCH);
+
+  if (options?.categoryId != null) {
+    kb.row().text("🔄 بروزرسانی قیمت و موجودی", Callbacks.categoryRefresh(options.categoryId));
+  }
 
   // Cancel is navigation/destructive
   if (options?.hasPendingInvoice) {
@@ -186,21 +253,25 @@ export function subCategoriesKeyboard(
 }
 
 export function servicePlansKeyboard(
-  products: Array<{ id: number; name: string; formattedPrice?: string }>,
+  products: Array<{ id: number; name: string; formattedPrice?: string; outOfStock?: boolean }>,
   categoryId: number,
   categoryName?: string,
+  subCategoryId?: number,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const p of products) {
     const customEmojiId = getProductCustomEmojiId(p.name);
     const namePart = truncateLabel(cleanProductLabel(p.name), 35);
-    const label = namePart;
+    const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
     appendFullWidthCta(
       kb,
       label.length > 64 ? `${label.slice(0, 61)}…` : label,
       Callbacks.viewProduct(p.id),
       customEmojiId,
     );
+  }
+  if (subCategoryId != null) {
+    kb.row().text("🔄 بروزرسانی قیمت و موجودی", Callbacks.categoryRefresh(categoryId));
   }
   const backLabel = categoryName ? `بازگشت به ${categoryName}` : "بازگشت";
   appendNavBar(kb, {

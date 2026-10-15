@@ -92,10 +92,18 @@ export interface SupplierProduct {
   }[];
 }
 
+export interface SupplierPurchaseContext {
+  internalInvoiceId?: number;
+  userInputData?: Record<string, string>;
+}
+
 export interface PurchaseResult {
   supplierOrderId: string;
   costAmount: number;
   deliveryPayload: string; // JSON string containing the delivery fields (e.g., credentials)
+  /** Supplier accepted the order but delivery is not ready yet */
+  isProcessing?: boolean;
+  status?: string;
 }
 
 /**
@@ -127,7 +135,12 @@ export interface SupplierAdapter {
    * If a timeout or network drop occurs during POST, this MUST throw SupplierPurchaseUncertainError.
    * Do NOT automatically retry POST purchases inside the adapter.
    */
-  purchase(apiKey: string, mapping: SupplierProductMapping, expectedPrice?: number): Promise<PurchaseResult>;
+  purchase(
+    apiKey: string,
+    mapping: SupplierProductMapping,
+    expectedPrice?: number,
+    context?: SupplierPurchaseContext,
+  ): Promise<PurchaseResult>;
 
   /**
    * If a purchase timed out and its state is UNCERTAIN, try to determine if it went through.

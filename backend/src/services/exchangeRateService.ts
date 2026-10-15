@@ -1,4 +1,8 @@
-import { settingsService, LAST_EXCHANGE_RATE_KEY } from "./settings/SettingsService";
+import {
+  settingsService,
+  LAST_EXCHANGE_RATE_KEY,
+  LAST_FX_RATE_SYNC_AT_KEY,
+} from "./settings/SettingsService";
 import { SWAPWALLET_API_BASE } from "./payments/SwapWalletService";
 
 /** 30 minutes lazy cache TTL */
@@ -27,6 +31,50 @@ export class ExchangeRateService {
     return this.lastFetchedAt;
   }
 
+  touchFetchedAt(at: number): void {
+    if (Number.isFinite(at) && at > 0) {
+      this.lastFetchedAt = at;
+    }
+  }
+
+  /**
+   * Force live SwapWallet fetch (used by lazy cache manual/background refresh).
+   */
+  async forceRefreshUsdRate(): Promise<number> {
+    if (this.inflight) {
+      return this.inflight;
+    }
+    this.inflight = this.fetchAndCacheRate().finally(() => {
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
+  private async readPersistedFxSyncAt(): Promise<number> {
+    const raw = await settingsService.getSetting(LAST_FX_RATE_SYNC_AT_KEY);
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  private async rateFromMemoryOrDb(fxSyncAt?: number): Promise<number | null> {
+    if (this.cachedRate !== null && this.cachedRate > 0) {
+      return this.cachedRate;
+    }
+    try {
+      const dbRate = await settingsService.getNumberSetting(LAST_EXCHANGE_RATE_KEY, 0);
+      if (dbRate > 0) {
+        this.cachedRate = dbRate;
+        if (fxSyncAt != null && fxSyncAt > 0) {
+          this.lastFetchedAt = fxSyncAt;
+        }
+        return dbRate;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
   /**
    * Get USD/USDT to Toman exchange rate.
    * Uses 30-minute lazy caching.
@@ -41,6 +89,12 @@ export class ExchangeRateService {
       now - this.lastFetchedAt < EXCHANGE_RATE_TTL_MS
     ) {
       return this.cachedRate;
+    }
+
+    const fxSyncAt = await this.readPersistedFxSyncAt();
+    if (fxSyncAt > 0 && now - fxSyncAt < EXCHANGE_RATE_TTL_MS) {
+      const cached = await this.rateFromMemoryOrDb(fxSyncAt);
+      if (cached != null) return cached;
     }
 
     if (this.inflight) {
@@ -71,6 +125,15 @@ export class ExchangeRateService {
       this.lastFetchedAt = Date.now();
 
       // Persist to DB asynchronously as last known good rate
+      settingsService
+        .setSetting(LAST_FX_RATE_SYNC_AT_KEY, String(this.lastFetchedAt))
+        .catch((err) => {
+          console.warn(
+            "[ExchangeRateService] Failed to persist FX sync timestamp:",
+            err instanceof Error ? err.message : err,
+          );
+        });
+
       settingsService
         .setSetting(LAST_EXCHANGE_RATE_KEY, String(liveRate))
         .catch((err) => {

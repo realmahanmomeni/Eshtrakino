@@ -1,6 +1,10 @@
 import type { EshtrakinoConversation, SessionContext } from "../context";
 import { catalogService } from "../../services/catalog/CatalogService";
-import { invoiceService } from "../../services/invoices/InvoiceService";
+import {
+  invoiceService,
+  renderInvoiceAmountLines,
+  type InvoiceAmountLinesSource,
+} from "../../services/invoices/InvoiceService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
 import { formatToman, parseUserInputData } from "../../lib/money";
 import { toPlain } from "../../lib/plain";
@@ -19,30 +23,40 @@ import { discountService } from "../../services/discount/DiscountService";
 import { ConvCb } from "../admin/keyboards";
 import { safeDeleteMessage } from "../utils/safeEdit";
 import { groupLogger } from "../../services/logger/GroupLogger";
-
-function renderInvoiceAmountLines(invoice: {
-  amount: any;
-  originalAmount?: any;
-  discountCode?: string | null;
-  discountPercent?: number | null;
-  discountAmount?: any;
-}): string[] {
-  if (
-    invoice.discountCode &&
-    invoice.originalAmount &&
-    Number(invoice.discountAmount) > 0
-  ) {
-    return [
-      `💵 مبلغ اولیه: ~${formatToman(invoice.originalAmount)}~`,
-      `🏷 تخفیف (${invoice.discountPercent}٪): -${formatToman(invoice.discountAmount)}`,
-      `💵 مبلغ نهایی: *${formatToman(invoice.amount)}*`,
-    ];
-  }
-  return [`💵 مبلغ: *${formatToman(invoice.amount)}*`];
-}
+import { verifyBeforeCheckout } from "../../services/catalog/prePaymentGuardService";
+import { Callbacks } from "../keyboards/callbacks";
+import { priceChangeConfirmKeyboardForProduct } from "../utils/prePaymentFlow";
 
 function menuKb(hasPending: boolean, telegramId?: number) {
   return mainMenuKeyboard(hasPending, isAdminTelegramId(telegramId));
+}
+
+type CheckoutInvoicePanel = InvoiceAmountLinesSource & {
+  id: number;
+  status: string;
+  expiresAt: string | Date;
+};
+
+function plainInvoiceFields(invoice: {
+  id: number;
+  amount: unknown;
+  status: string;
+  expiresAt: Date;
+  discountCode?: string | null;
+  originalAmount?: unknown;
+  discountPercent?: number | null;
+  discountAmount?: unknown;
+}): CheckoutInvoicePanel {
+  return toPlain({
+    id: invoice.id,
+    amount: invoice.amount,
+    status: invoice.status,
+    expiresAt: invoice.expiresAt,
+    discountCode: invoice.discountCode ?? null,
+    originalAmount: invoice.originalAmount ?? null,
+    discountPercent: invoice.discountPercent ?? null,
+    discountAmount: invoice.discountAmount ?? null,
+  }) as CheckoutInvoicePanel;
 }
 
 function logConvError(label: string, err: unknown): void {
@@ -133,6 +147,25 @@ export async function checkoutConversation(
 
     const createResult = await conversation.external(async () => {
       try {
+        const guard = await verifyBeforeCheckout(productId);
+        if (guard.status === "OUT_OF_STOCK") {
+          return {
+            ok: false as const,
+            code: "OOS" as const,
+            pendingId: 0,
+            message: "out of stock",
+          };
+        }
+        if (guard.status === "PRICE_CHANGED") {
+          return {
+            ok: false as const,
+            code: "PRICE_CHANGED" as const,
+            pendingId: 0,
+            message: guard.message,
+            newPriceToman: guard.newPriceToman,
+          };
+        }
+
         const user = await invoiceService.ensureUser(BigInt(telegramId));
         const invoice = await invoiceService.createPendingInvoice(
           user.id,
@@ -142,12 +175,7 @@ export async function checkoutConversation(
         );
         return {
           ok: true as const,
-          invoice: toPlain({
-            id: invoice.id,
-            amount: invoice.amount,
-            status: invoice.status,
-            expiresAt: invoice.expiresAt,
-          }),
+          invoice: plainInvoiceFields(invoice),
         };
       } catch (err) {
         const name = err instanceof Error ? err.name : "";
@@ -170,6 +198,86 @@ export async function checkoutConversation(
     });
 
     if (!createResult.ok) {
+      if (createResult.code === "OOS") {
+        await conversation.external((c) => {
+          c.session.checkoutProductId = undefined;
+        });
+        await ctx.reply(
+          "❌ متاسفانه در این لحظه موجودی این اشتراک به اتمام رسید. لطفاً سایر پلن‌ها را بررسی کنید.",
+          { reply_markup: menuKb(false, ctx.from.id) },
+        );
+        return;
+      }
+
+      if (createResult.code === "PRICE_CHANGED") {
+        await ctx.reply(createResult.message, {
+          reply_markup: priceChangeConfirmKeyboardForProduct(productId),
+        });
+        const confirm = await conversation.waitForCallbackQuery([
+          Callbacks.buyConfirmNewPrice(productId),
+          Callbacks.buyCancelNewPrice,
+        ]);
+        await confirm.answerCallbackQuery();
+        if (confirm.callbackQuery.data === Callbacks.buyCancelNewPrice) {
+          await conversation.external((c) => {
+            c.session.checkoutProductId = undefined;
+          });
+          await ctx.reply("❌ خرید لغو شد.", { reply_markup: menuKb(false, ctx.from.id) });
+          return;
+        }
+
+        const retry = await conversation.external(async () => {
+          try {
+            const user = await invoiceService.ensureUser(BigInt(telegramId));
+            const invoice = await invoiceService.createPendingInvoice(
+              user.id,
+              productId,
+              Object.keys(answersCopy).length > 0 ? answersCopy : undefined,
+              product.deliveryType === "USER_CHOICE" ? "READY" : undefined,
+            );
+            return { ok: true as const, invoice: plainInvoiceFields(invoice) };
+          } catch (err) {
+            return {
+              ok: false as const,
+              message: err instanceof Error ? err.message : String(err),
+            };
+          }
+        });
+
+        if (!retry.ok) {
+          await ctx.reply(
+            ["⚠️ *ساخت فاکتور ناموفق بود*", "", retry.message].join("\n"),
+            { parse_mode: "Markdown", reply_markup: menuKb(false, ctx.from.id) },
+          );
+          return;
+        }
+
+        const invoice = retry.invoice;
+        const userBalance = await conversation.external(async () => {
+          const user = await invoiceService.ensureUser(BigInt(telegramId));
+          return formatToman(user.balance);
+        });
+
+        await ctx.reply(
+          [
+            "✅ *فاکتور ساخته شد*",
+            "",
+            `🧾 شماره: *#${invoice.id}*`,
+            `${emojiForLabel(product.name)} محصول: *${product.name}*`,
+            ...renderInvoiceAmountLines(invoice),
+            "",
+            "روش پرداخت را انتخاب کنید:",
+          ].join("\n"),
+          {
+            parse_mode: "Markdown",
+            reply_markup: await buildCheckoutPaymentKeyboard(invoice.id, userBalance, {
+              hasDiscount: false,
+            }),
+          },
+        );
+        return;
+      }
+
       if (createResult.code === "PENDING") {
         const refreshed = await conversation.external(async () => {
           const r = await invoiceService.refreshInvoicePriceIfUsd(createResult.pendingId);
@@ -227,7 +335,7 @@ export async function checkoutConversation(
     }
 
     let currentInvoice = createResult.invoice;
-    let hasDiscount = Boolean((currentInvoice as any).discountCode);
+    let hasDiscount = Boolean(currentInvoice.discountCode);
 
     await conversation.external((c) => {
       c.session.checkoutProductId = undefined;
@@ -258,7 +366,7 @@ export async function checkoutConversation(
       "",
       `🧾 شماره: *#${inv.id}*`,
       `${emojiForLabel(product.name)} محصول: *${product.name}*`,
-      ...renderInvoiceAmountLines(inv as any),
+      ...renderInvoiceAmountLines(inv),
       `📊 وضعیت: *${inv.status}*`,
       `🚚 ${deliveryTypeLabel(product.deliveryType)}`,
       ...inputLines,
@@ -408,12 +516,12 @@ export async function checkoutConversation(
                 productId,
               );
               return {
-                invoice: toPlain(res.invoice),
+                invoice: plainInvoiceFields(res.invoice),
                 calc: toPlain(res.calc),
               };
             });
 
-            currentInvoice = result.invoice;
+            currentInvoice = result.invoice as CheckoutInvoicePanel;
             hasDiscount = true;
 
             const successMsg = [
@@ -440,8 +548,9 @@ export async function checkoutConversation(
               panel,
             );
             break;
-          } catch (err: any) {
-            const errMsg = err?.message || "کد تخفیف وارد شده معتبر نیست.";
+          } catch (err: unknown) {
+            const errMsg =
+              err instanceof Error ? err.message : "کد تخفیف وارد شده معتبر نیست.";
             const retryPrompt = [
               `❌ *خطا:* ${errMsg}`,
               "",

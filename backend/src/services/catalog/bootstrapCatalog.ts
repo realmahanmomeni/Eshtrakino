@@ -9,7 +9,7 @@ import {
 
 /**
  * Ensures that Category "ابزارهای هوش مصنوعی", SubCategory "جمنای",
- * and Product "جمنای پرو 18 ماهه" exist with Quantum Bot delivery (SUPPLIER_AUTO).
+ * and Product "جمنای پرو 18 ماهه" exist with Canboso delivery (SUPPLIER_AUTO).
  * Adheres strictly to the Inspect-Before-Create rule to prevent duplicate records.
  */
 export async function ensureGeminiProProduct(): Promise<void> {
@@ -98,7 +98,7 @@ export async function ensureGeminiProProduct(): Promise<void> {
           usdPrice: 20.0,
           categoryId: category.id,
           subCategoryId: subCategory.id,
-          deliveryType: DeliveryType.SUPPLIER_AUTO, // Quantum Bot automated delivery
+          deliveryType: DeliveryType.SUPPLIER_AUTO, // Canboso supplier dispatch
           durationDays: 540, // 18 months (~540 days)
           description: "اشتراک ۱۸ ماهه جمنای پرو با دسترسی کامل به مدل هوش مصنوعی Gemini 1.5 Pro و Google Advanced",
           isActive: true,
@@ -123,22 +123,25 @@ export async function ensureGeminiProProduct(): Promise<void> {
       );
     }
 
-    // 4. Inspect Supplier "QuantumVault" (Quantum Bot)
+    // 4. Inspect Supplier "Canboso" (primary digital supplier)
     const targetProduct = existingProduct ?? (await prisma.product.findFirst({ where: { name: productName } }));
     let supplier = await prisma.supplier.findFirst({
       where: {
-        OR: [{ name: "QuantumVault" }, { name: "Quantum Bot" }],
+        OR: [
+          { name: "Canboso" },
+          { name: { contains: "canboso", mode: "insensitive" } },
+        ],
       },
     });
 
     if (!supplier) {
       supplier = await prisma.supplier.create({
         data: {
-          name: "QuantumVault",
+          name: "Canboso",
           isActive: true,
         },
       });
-      console.log(`[BOOTSTRAP] Created default supplier "QuantumVault" (ID: ${supplier.id}).`);
+      console.log(`[BOOTSTRAP] Created default supplier "Canboso" (ID: ${supplier.id}).`);
     } else if (!supplier.isActive) {
       supplier = await prisma.supplier.update({
         where: { id: supplier.id },

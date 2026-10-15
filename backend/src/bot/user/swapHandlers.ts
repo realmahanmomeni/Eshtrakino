@@ -25,6 +25,8 @@ import {
 import { buildCheckoutPaymentKeyboard } from "../keyboards/paymentChoice";
 import { fulfillmentService } from "../../services/fulfillment/FulfillmentService";
 import { groupLogger } from "../../services/logger/GroupLogger";
+import { verifyBeforePayment } from "../../services/catalog/prePaymentGuardService";
+import { handlePrePaymentGuardResult } from "../utils/prePaymentFlow";
 import {
   InsufficientBalanceError,
   walletService,
@@ -511,6 +513,10 @@ export function registerSwapHandlers(bot: Bot<BotContext>): void {
       await ctx.answerCallbackQuery({ text: "فاکتور نامعتبر", show_alert: true });
       return;
     }
+
+    const guard = await verifyBeforePayment(productInvoiceId);
+    const proceed = await handlePrePaymentGuardResult(ctx, user.id, guard);
+    if (!proceed) return;
 
     const refreshed = await invoiceService.refreshInvoicePriceIfUsd(productInvoiceId);
     const currentPending = (refreshed?.invoice ?? pending) as typeof pending;

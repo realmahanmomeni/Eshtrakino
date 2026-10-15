@@ -12,6 +12,8 @@ export interface SessionData {
   /** Invoice id pending interactive rejection reason from admin */
   adminRejectInvoiceId?: number;
   checkoutProductId?: number;
+  /** USER_CHOICE delivery picked before pre-payment price confirm */
+  checkoutDeliveryPreference?: "READY" | "CREDENTIALS_REQUIRED";
   receiptInvoiceId?: number;
   credentialsInvoiceId?: number;
   /** Selected PaymentMethod.id for wallet top-up conversation */
@@ -33,6 +35,8 @@ export interface SessionData {
   adminReplyTicketId?: number;
   discountInvoiceId?: number;
   pendingInvoiceId?: number;
+  /** Opens price edit sub-flow immediately inside editProduct conversation */
+  adminOpenProductPriceEdit?: boolean;
 };
 
 /** Explicit defaults for `session({ initial })` — keeps keys defined. */

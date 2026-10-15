@@ -38,6 +38,41 @@ export class CatalogService {
     });
   }
 
+  /** Shop home — ordered short categories for 2-column mobile layout. */
+  async listShopCategories(): Promise<Category[]> {
+    const { sortShopCategories, SHOP_CATEGORY_SPECS } = await import("./whiteLabelCatalog.js");
+    const activeNames = new Set(SHOP_CATEGORY_SPECS.map((c) => c.name));
+    const categories = await prisma.category.findMany({
+      where: {
+        isActive: true,
+        name: { in: [...activeNames] },
+      },
+    });
+    return sortShopCategories(categories);
+  }
+
+  async listDisplayProductsByCategory(categoryId: number): Promise<Product[]> {
+    return prisma.product.findMany({
+      where: { categoryId },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  async listDisplayProductsBySubCategory(subCategoryId: number): Promise<Product[]> {
+    return prisma.product.findMany({
+      where: { subCategoryId },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  async listDisplaySubCategoriesByCategory(categoryId: number): Promise<SubCategoryRecord[]> {
+    return (prisma as any).subCategory.findMany({
+      where: { categoryId, isActive: true },
+      include: { category: true },
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+  }
+
   async listCategories(activeOnly = true): Promise<Category[]> {
     return activeOnly ? this.listActiveCategories() : this.listAllCategories();
   }
@@ -428,7 +463,28 @@ export class CatalogService {
    * If the product is priced in USD, dynamically converts using the latest exchange rate.
    */
   async getEffectivePrice(product: Product): Promise<number> {
-    const p = product as any;
+    const { getEffectiveTomanFromMargin, isMarginPricedProduct } = await import(
+      "./profitMarginService.js"
+    );
+
+    const withRelations =
+      (product as Product & { category?: { name: string } | null }).category != null
+        ? (product as Product & { category?: { name: string } | null; subCategory?: { name: string } | null })
+        : await prisma.product.findUnique({
+            where: { id: product.id },
+            include: { category: true, subCategory: true },
+          });
+
+    const target = withRelations ?? product;
+
+    if (isMarginPricedProduct(target)) {
+      const marginToman = await getEffectiveTomanFromMargin(target);
+      if (marginToman != null && marginToman > 0) {
+        return marginToman;
+      }
+    }
+
+    const p = product as Product & { usdPrice?: number | null; currency?: string };
     if (p.currency === "USD" && p.usdPrice != null && p.usdPrice > 0) {
       const rate = await exchangeRateService.getUsdRate();
       return convertUsdToToman(p.usdPrice, rate);

@@ -56,6 +56,30 @@ export function buildPriceUpdateNotice(oldPrice: number, newPrice: number): stri
   ].join("\n");
 }
 
+/** Fields needed to render discount-aware invoice amount lines in Telegram UI. */
+export type InvoiceAmountLinesSource = Pick<
+  Invoice,
+  "amount" | "discountCode" | "discountPercent"
+> & {
+  originalAmount?: Invoice["originalAmount"];
+  discountAmount?: Invoice["discountAmount"];
+};
+
+export function renderInvoiceAmountLines(invoice: InvoiceAmountLinesSource): string[] {
+  if (
+    invoice.discountCode &&
+    invoice.originalAmount != null &&
+    Number(invoice.discountAmount) > 0
+  ) {
+    return [
+      `💵 مبلغ اولیه: ~${formatToman(invoice.originalAmount)}~`,
+      `🏷 تخفیف (${invoice.discountPercent}٪): -${formatToman(invoice.discountAmount)}`,
+      `💵 مبلغ نهایی: *${formatToman(invoice.amount)}*`,
+    ];
+  }
+  return [`💵 مبلغ: *${formatToman(invoice.amount)}*`];
+}
+
 export type InvoiceWithProduct = Invoice & { product: Product | null };
 export type InvoiceWithUserProduct = Invoice & {
   product: Product | null;
@@ -143,7 +167,21 @@ export class InvoiceService {
 
     const expiresAt = new Date(Date.now() + INVOICE_TTL_MS);
     let amount: Decimal;
-    if (product.currency === "USD" && product.usdPrice != null && product.usdPrice > 0) {
+    const { getEffectiveTomanFromMargin, isMarginPricedProduct } = await import(
+      "../catalog/profitMarginService.js"
+    );
+    const productForMargin = await prisma.product.findUnique({
+      where: { id: product.id },
+      include: { category: true, subCategory: true },
+    });
+    const marginToman =
+      productForMargin && isMarginPricedProduct(productForMargin)
+        ? await getEffectiveTomanFromMargin(productForMargin)
+        : null;
+
+    if (marginToman != null && marginToman > 0) {
+      amount = new Decimal(marginToman);
+    } else if (product.currency === "USD" && product.usdPrice != null && product.usdPrice > 0) {
       const rate = await exchangeRateService.getUsdRate();
       const tomanPrice = convertUsdToToman(product.usdPrice, rate);
       amount = new Decimal(tomanPrice);
@@ -196,12 +234,26 @@ export class InvoiceService {
     }
 
     const product = invoice.product;
-    if (product.currency === "USD" && product.usdPrice != null && product.usdPrice > 0) {
+    const { getEffectiveTomanFromMargin, isMarginPricedProduct } = await import(
+      "../catalog/profitMarginService.js"
+    );
+    const productForMargin = await prisma.product.findUnique({
+      where: { id: product.id },
+      include: { category: true, subCategory: true },
+    });
+
+    let newPrice: number | null = null;
+    if (productForMargin && isMarginPricedProduct(productForMargin)) {
+      newPrice = await getEffectiveTomanFromMargin(productForMargin);
+    } else if (product.currency === "USD" && product.usdPrice != null && product.usdPrice > 0) {
       const rate = await exchangeRateService.getUsdRate();
-      const newPrice = convertUsdToToman(product.usdPrice, rate);
+      newPrice = convertUsdToToman(product.usdPrice, rate);
+    }
+
+    if (newPrice != null && newPrice > 0) {
       const oldPrice = Math.round(Number(invoice.amount));
 
-      if (newPrice !== oldPrice && newPrice > 0) {
+      if (newPrice !== oldPrice) {
         const updated = await prisma.invoice.update({
           where: { id: invoice.id },
           data: {

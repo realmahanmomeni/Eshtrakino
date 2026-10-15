@@ -4,7 +4,12 @@ import type { BotContext } from "../context";
 import { catalogService } from "../../services/catalog/CatalogService";
 import { starsPricingService, isStarsCatalog } from "../../services/catalog/starsPricingService";
 import { exchangeRateService } from "../../services/exchangeRateService";
-import { invoiceService, buildPriceUpdateNotice } from "../../services/invoices/InvoiceService";
+import {
+  invoiceService,
+  buildPriceUpdateNotice,
+  renderInvoiceAmountLines,
+  type InvoiceWithProduct,
+} from "../../services/invoices/InvoiceService";
 import { paymentMethodService } from "../../services/paymentMethods/PaymentMethodService";
 import { groupLogger } from "../../services/logger/GroupLogger";
 import { ticketService } from "../../services/tickets/TicketService";
@@ -13,10 +18,8 @@ import {
   categoryContentsKeyboard,
   chooseDeliveryPreferenceKeyboard,
   mainMenuKeyboard,
-  paymentMethodsKeyboard,
   pendingInvoiceKeyboard,
   productDetailKeyboard,
-  productsKeyboard,
   servicePlansKeyboard,
 } from "../keyboards/builders";
 import { BUTTON_CUSTOM_EMOJIS } from "../keyboards/buttonEmojis";
@@ -37,12 +40,37 @@ import {
   uploadReceiptConversation,
 } from "../conversations/checkout";
 import { applyDiscountConversation } from "../conversations/discountConversation";
+import { shopSearchConversation } from "../conversations/searchConversation";
 import { registerUserHandlers } from "../user/handlers";
 import { registerSwapHandlers } from "../user/swapHandlers";
 import { safeEdit, safeEditMedia, safeDeleteMessage } from "../utils/safeEdit";
+import { customerCallbackErrorMiddleware, logHandlerError } from "../utils/customerErrors";
+import { exitAllConversations } from "../utils/conversations";
 import { presentCmsPage } from "../cms/presentPage";
 import { pageContentService } from "../../services/cms/PageContentService";
 import { forceJoinService } from "../../services/forceJoin/ForceJoinService";
+import {
+  OUT_OF_STOCK_ALERT,
+  isProductOutOfStock,
+  isProductOutOfStockById,
+} from "../../services/catalog/catalogAvailability";
+import {
+  presentCategoryView,
+  presentShopCategories,
+  sanitizeCustomerCatalogText,
+} from "../utils/catalogUi";
+import { lazyCacheService } from "../../services/catalog/LazyCacheService";
+import {
+  verifyBeforeCheckout,
+  verifyBeforePayment,
+} from "../../services/catalog/prePaymentGuardService";
+import { handlePrePaymentGuardResult } from "../utils/prePaymentFlow";
+import {
+  MANUAL_CATALOG_REFRESH_DEBOUNCE_TOAST,
+  tryBeginManualCatalogRefresh,
+} from "../utils/catalogRefreshDebounce";
+import { SupplierRateLimitError } from "../../services/suppliers/SupplierAdapter";
+import { CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE } from "../../services/suppliers/adapters/CanbosoAdapter";
 import { InlineKeyboard } from "grammy";
 import { adminHomeKeyboard } from "../admin/keyboards";
 import { hasAnyAdminAccess } from "../admin/rbac";
@@ -51,25 +79,107 @@ function menuKb(hasPending: boolean, telegramId?: number) {
   return mainMenuKeyboard(hasPending, isAdminTelegramId(telegramId));
 }
 
-function renderInvoiceAmountLines(invoice: {
-  amount: any;
-  originalAmount?: any;
-  discountCode?: string | null;
-  discountPercent?: number | null;
-  discountAmount?: any;
-}): string[] {
-  if (
-    invoice.discountCode &&
-    invoice.originalAmount &&
-    Number(invoice.discountAmount) > 0
-  ) {
-    return [
-      `💵 مبلغ اولیه: ~${formatToman(invoice.originalAmount)}~`,
-      `🏷 تخفیف (${invoice.discountPercent}٪): -${formatToman(invoice.discountAmount)}`,
-      `💵 مبلغ نهایی: *${formatToman(invoice.amount)}*`,
-    ];
+async function showPaymentMethodSelection(
+  ctx: BotContext,
+  invoiceId: number,
+  options?: { skipLiveGuard?: boolean },
+): Promise<void> {
+  if (!ctx.from) return;
+  const user = await invoiceService.ensureUser(BigInt(ctx.from.id));
+  const pending = await invoiceService.getOpenInvoice(user.id);
+
+  if (!pending || pending.id !== invoiceId) {
+    await ctx.answerCallbackQuery({
+      text: "فاکتور در انتظار معتبر نیست",
+      show_alert: true,
+    });
+    return;
   }
-  return [`💵 مبلغ: *${formatToman(invoice.amount)}*`];
+
+  if (pending.status !== "PENDING") {
+    await ctx.answerCallbackQuery({
+      text: `وضعیت فعلی: ${pending.status}`,
+      show_alert: true,
+    });
+    return;
+  }
+
+  if (pending.expiresAt.getTime() <= Date.now()) {
+    await invoiceService.expireOverdue();
+    await ctx.answerCallbackQuery({ text: "فاکتور منقضی شده", show_alert: true });
+    await safeEdit(
+      ctx,
+      [
+        "⌛ *فاکتور منقضی شده*",
+        "",
+        `🧾 شماره: *#${invoiceId}*`,
+        "",
+        "لطفا دوباره از فروشگاه خرید کنید.",
+      ].join("\n"),
+      {
+        parse_mode: "Markdown",
+        reply_markup: menuKb(false, ctx.from.id),
+      },
+    );
+    return;
+  }
+
+  if (!options?.skipLiveGuard && pending.product) {
+    const guard = await verifyBeforePayment(invoiceId);
+    const proceed = await handlePrePaymentGuardResult(ctx, user.id, guard);
+    if (!proceed) return;
+  }
+
+  const refreshed = await invoiceService.refreshInvoicePriceIfUsd(pending.id);
+  const currentPending: InvoiceWithProduct = refreshed?.invoice ?? pending;
+  if (refreshed?.priceChanged) {
+    await ctx.reply(buildPriceUpdateNotice(refreshed.oldPrice, refreshed.newPrice));
+  }
+
+  const methods = await paymentMethodService.listActiveForButtons();
+  const swapEnabled = await settingsService.getBoolSetting(SWAPPAY_ENABLED, true);
+
+  if (methods.length === 0 && !swapEnabled && Number(user.balance) <= 0) {
+    await ctx.answerCallbackQuery({
+      text: "روش پرداخت فعالی نیست",
+      show_alert: true,
+    });
+    await safeEdit(
+      ctx,
+      [
+        "⚠️ *روش پرداخت در دسترس نیست*",
+        "",
+        "در حال حاضر امکان پرداخت کارت به کارت، سواپ ولت یا کیف پول وجود ندارد.",
+      ].join("\n"),
+      {
+        parse_mode: "Markdown",
+        reply_markup: pendingInvoiceKeyboard(invoiceId),
+      },
+    );
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+  await safeEdit(
+    ctx,
+    [
+      "💳 *انتخاب روش پرداخت*",
+      "",
+      `🧾 فاکتور: *#${currentPending.id}*`,
+      `📦 مورد: *${invoiceItemLabel(currentPending)}*`,
+      ...renderInvoiceAmountLines(currentPending),
+      "",
+      "روش پرداخت را انتخاب کنید:",
+    ].join("\n"),
+    {
+      parse_mode: "Markdown",
+      reply_markup: await buildCheckoutPaymentKeyboard(
+        currentPending.id,
+        formatToman(user.balance),
+        { hasDiscount: Boolean(currentPending.discountCode) },
+      ),
+    },
+  );
 }
 
 async function handleCustomPaymentMethod(
@@ -91,6 +201,10 @@ async function handleCustomPaymentMethod(
     await ctx.answerCallbackQuery({ text: "فاکتور نامعتبر", show_alert: true });
     return;
   }
+
+  const guard = await verifyBeforePayment(invoiceId);
+  const proceed = await handlePrePaymentGuardResult(ctx, user.id, guard);
+  if (!proceed) return;
 
   const method = await paymentMethodService.getById(methodId);
   if (!method || !method.isActive) {
@@ -116,11 +230,7 @@ async function handleCustomPaymentMethod(
     await invoiceService.markAwaitingReceipt(invoiceId);
     await ctx.answerCallbackQuery({ text: "جزئیات پرداخت نمایش داده شد" });
     await safeEdit(ctx, instructions, { parse_mode: "HTML" });
-    try {
-      await ctx.conversation.exitAll();
-    } catch {
-      /* ignore */
-    }
+    await exitAllConversations(ctx);
     ctx.session.receiptInvoiceId = invoiceId;
     await ctx.conversation.enter("uploadReceipt");
     return;
@@ -145,22 +255,20 @@ function invoiceItemLabel(
 
 async function startCheckout(ctx: BotContext, productId: number): Promise<void> {
   await ctx.answerCallbackQuery({ text: "ادامه خرید…" });
-  try {
-    await ctx.conversation.exitAll();
-  } catch {
-    /* ignore */
-  }
+  await exitAllConversations(ctx);
   ctx.session.checkoutProductId = productId;
   await ctx.conversation.enter("checkout");
 }
 
 async function startSupportTicket(ctx: BotContext): Promise<void> {
-  try {
-    await ctx.conversation.exitAll();
-  } catch {
-    /* ignore */
-  }
+  await exitAllConversations(ctx);
   await ctx.conversation.enter("support");
+}
+
+async function startShopSearch(ctx: BotContext): Promise<void> {
+  await ctx.answerCallbackQuery({ text: "جستجو…" }).catch(() => undefined);
+  await exitAllConversations(ctx);
+  await ctx.conversation.enter("shopSearch");
 }
 
 export function registerHandlers(bot: Bot<BotContext>): void {
@@ -168,13 +276,14 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   bot.use(createConversation(uploadReceiptConversation, "uploadReceipt"));
   bot.use(createConversation(applyDiscountConversation, "discountConversation"));
   bot.use(createConversation(applyDiscountConversation, "applyDiscountConversation"));
+  bot.use(createConversation(shopSearchConversation, "shopSearch"));
+  bot.use(customerCallbackErrorMiddleware);
   registerUserHandlers(bot);
   registerSwapHandlers(bot);
 
   // --- FORCE JOIN MIDDLEWARE ---
   bot.use(async (ctx, next) => {
     if (ctx.callbackQuery?.data === "force_join:check") {
-      const channelId = await forceJoinService.getInviteLink(); // just used to trigger fetch if needed, wait, we do validation next
       if (await forceJoinService.shouldBlockUser(ctx)) {
         await ctx.answerCallbackQuery({ text: "⚠️ شما هنوز در کانال عضو نشده‌اید!", show_alert: true });
         return;
@@ -221,7 +330,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   });
 
   async function showProductDetail(ctx: BotContext, productId: number, forceReply = false): Promise<void> {
-    const product = await catalogService.getProduct(productId);
+    const product = await catalogService.getProduct(productId, false);
 
     if (!product) {
       if (!forceReply && ctx.callbackQuery) {
@@ -241,7 +350,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       return;
     }
 
-    const description = catalogService.descriptionOf(product);
+    const outOfStock = await isProductOutOfStock(product);
+    if (outOfStock && ctx.callbackQuery) {
+      await ctx.answerCallbackQuery({ text: OUT_OF_STOCK_ALERT, show_alert: true });
+    }
+
+    const description = sanitizeCustomerCatalogText(catalogService.descriptionOf(product));
     const effectivePrice = await catalogService.getEffectivePrice(product);
     const caption = [
       `${emojiForLabel(product.name)} *${product.name}*`,
@@ -265,7 +379,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const kb = productDetailKeyboard(
       product.id,
       product.categoryId,
-      (product as any).subCategoryId,
+      product.subCategoryId,
     );
 
     if (!forceReply && ctx.callbackQuery) {
@@ -304,7 +418,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const category = await catalogService.getCategory(subCategory.categoryId);
     const categoryName = category?.name ?? "دسته بندی";
 
-    const rawProducts = await catalogService.listActiveProductsBySubCategory(subCategoryId);
+    const rawProducts = await catalogService.listDisplayProductsBySubCategory(subCategoryId);
 
     const planProducts = await Promise.all(
       rawProducts.map(async (p) => {
@@ -313,6 +427,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
           id: p.id,
           name: p.name,
           formattedPrice: formatToman(effectivePrice),
+          outOfStock: await isProductOutOfStock(p),
         };
       }),
     );
@@ -320,7 +435,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const subBanner =
       subCategory.bannerUrl?.trim() ||
       subCategory.coverImageUrl?.trim() ||
-      (category as any)?.bannerUrl?.trim() ||
+      category?.bannerUrl?.trim() ||
       BannerAssets.category;
 
     const desc = subCategory.description?.trim();
@@ -353,7 +468,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
             : "برای خرید، پلن مورد نظر خود را انتخاب کنید:",
         ].join("\n");
 
-    const kb = servicePlansKeyboard(planProducts, subCategory.categoryId, categoryName);
+    const kb = servicePlansKeyboard(
+      planProducts,
+      subCategory.categoryId,
+      categoryName,
+      subCategoryId,
+    );
     const parse_mode = isStars ? "HTML" : "Markdown";
 
     if (!forceReply && ctx.callbackQuery) {
@@ -377,15 +497,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   }
 
   bot.command("start", async (ctx) => {
-    try {
-      if (ctx.conversation) {
-        if (typeof ctx.conversation.exitAll === "function") {
-          await ctx.conversation.exitAll();
-        } else if (typeof (ctx.conversation as any).exit === "function") {
-          await (ctx.conversation as any).exit();
-        }
-      }
-    } catch {}
+    await exitAllConversations(ctx);
     const user = await invoiceService.ensureUser(BigInt(ctx.from!.id));
     const startPayload = ctx.match?.trim() || "";
     const referrerId =
@@ -494,6 +606,15 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await presentCmsPage(ctx, "shop", "edit");
   });
 
+  bot.callbackQuery(Callbacks.shopRoot, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await presentShopCategories(ctx, 2);
+  });
+
+  bot.callbackQuery(Callbacks.shopSearch, async (ctx) => {
+    await startShopSearch(ctx);
+  });
+
   bot.callbackQuery(Callbacks.account, async (ctx) => {
     await ctx.answerCallbackQuery();
     await presentCmsPage(ctx, "account", "edit");
@@ -543,87 +664,58 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await ctx.answerCallbackQuery();
     const categoryId = Number(ctx.match![1]);
     ctx.session.lastCategoryId = categoryId;
-    const category = await catalogService.getCategory(categoryId);
+    await presentCategoryView(ctx, categoryId);
+  });
 
-    if (!category) {
-      await safeEditMedia(
-        ctx,
-        BannerAssets.shop,
-        [
-          "⚠️ *دسته بندی نامعتبر*",
-          "",
-          "این دسته بندی یافت نشد یا غیرفعال است.",
-        ].join("\n"),
-        categoriesKeyboard(await catalogService.listActiveCategories()),
-      );
+  bot.callbackQuery(/^cat:refresh:(\d+)$/, async (ctx) => {
+    const userId = ctx.from?.id;
+    if (userId != null && !tryBeginManualCatalogRefresh(userId)) {
+      await ctx.answerCallbackQuery({ text: MANUAL_CATALOG_REFRESH_DEBOUNCE_TOAST });
       return;
     }
 
-    const subCategories = await catalogService.listSubCategoriesByCategory(categoryId, true);
-    const allProducts = await catalogService.listActiveProductsByCategory(categoryId);
-    const standaloneProducts = allProducts.filter((p: any) => p.subCategoryId == null);
-    const user = await invoiceService.ensureUser(BigInt(ctx.from.id));
-    const pending = await invoiceService.getOpenInvoice(user.id);
-
-    const catBanner = (category as any).bannerUrl?.trim() || BannerAssets.category;
-    const desc = (category as any).description?.trim();
-    const isStars = isStarsCatalog(category.name);
-    let starsRateLine = "";
-    if (isStars) {
-      const unitUsdPrice = await starsPricingService.getStarsUnitUsdPrice();
-      const usdRate = await exchangeRateService.getUsdToTomanRate();
-      const oneStarToman = Math.round(unitUsdPrice * usdRate);
-      const formattedToman = oneStarToman.toLocaleString("en-US");
-      starsRateLine = `⭐️ قیمت هر ۱ عدد استارز امروز: <b>${formattedToman} تومان</b>`;
+    try {
+      await lazyCacheService.manualCatalogRefresh();
+      await ctx.answerCallbackQuery({
+        text: "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
+      });
+    } catch (err) {
+      console.warn("[shop refresh] sync failed:", err);
+      const rateLimited =
+        err instanceof SupplierRateLimitError ||
+        (err instanceof Error && err.message.includes(CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE));
+      await ctx.answerCallbackQuery({
+        text: rateLimited ? CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE : "بروزرسانی ناموفق بود",
+        show_alert: rateLimited,
+      });
     }
+    const categoryId = Number(ctx.match![1]);
+    await presentCategoryView(ctx, categoryId);
+  });
 
-    const title = isStars ? `✨ <b>${category.name}</b>` : `${emojiForLabel(category.name)} *${category.name}*`;
-    const parse_mode = isStars ? "HTML" : "Markdown";
-
-    if (subCategories.length === 0 && standaloneProducts.length === 0) {
-      const shopPage = await pageContentService.getPage("shop");
-      await safeEditMedia(
-        ctx,
-        catBanner,
-        [
-          title,
-          ...(desc ? ["", `📝 ${desc}`] : []),
-          ...(starsRateLine ? ["", starsRateLine] : []),
-          "",
-          "فعلا محصول یا سرویس فعالی در این دسته وجود ندارد.",
-        ].join("\n"),
-        categoriesKeyboard(
-          await catalogService.listActiveCategories(),
-          shopPage.layoutColumns,
-        ),
-        "photo",
-        { parse_mode },
-      );
+  bot.callbackQuery(Callbacks.shopRefresh, async (ctx) => {
+    const userId = ctx.from?.id;
+    if (userId != null && !tryBeginManualCatalogRefresh(userId)) {
+      await ctx.answerCallbackQuery({ text: MANUAL_CATALOG_REFRESH_DEBOUNCE_TOAST });
       return;
     }
 
-    const shopPage = await pageContentService.getPage("shop");
-    const caption = [
-      title,
-      ...(desc ? ["", `📝 ${desc}`] : []),
-      ...(starsRateLine ? ["", starsRateLine] : []),
-      "",
-      subCategories.length > 0
-        ? "سرویس یا محصول مورد نظر را انتخاب کنید:"
-        : "📦 محصول مورد نظر را انتخاب کنید:",
-    ].join("\n");
-
-    await safeEditMedia(
-      ctx,
-      catBanner,
-      caption,
-      categoryContentsKeyboard(subCategories, standaloneProducts, {
-        hasPendingInvoice: Boolean(pending),
-        layoutColumns: shopPage.layoutColumns,
-      }),
-      "photo",
-      { parse_mode },
-    );
+    try {
+      await lazyCacheService.manualCatalogRefresh();
+      await ctx.answerCallbackQuery({
+        text: "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
+      });
+    } catch (err) {
+      console.warn("[shop refresh] sync failed:", err);
+      const rateLimited =
+        err instanceof SupplierRateLimitError ||
+        (err instanceof Error && err.message.includes(CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE));
+      await ctx.answerCallbackQuery({
+        text: rateLimited ? CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE : "بروزرسانی ناموفق بود",
+        show_alert: rateLimited,
+      });
+    }
+    await presentShopCategories(ctx, 2);
   });
 
   bot.callbackQuery(/^(?:subcat|subcat:view):(\d+)$/, async (ctx) => {
@@ -641,17 +733,22 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   bot.callbackQuery(/^buy:(\d+)$/, async (ctx) => {
     const productId = Number(ctx.match![1]);
     const user = await invoiceService.ensureUser(BigInt(ctx.from.id));
-    const product = await catalogService.getProduct(productId);
+    const product = await catalogService.getProduct(productId, false);
 
     if (!product) {
       await ctx.answerCallbackQuery({ text: "محصول یافت نشد", show_alert: true });
       return;
     }
 
+    if (await isProductOutOfStockById(productId)) {
+      await ctx.answerCallbackQuery({ text: OUT_OF_STOCK_ALERT, show_alert: true });
+      return;
+    }
+
     const existing = await invoiceService.getOpenInvoice(user.id);
     if (existing) {
       const refreshed = await invoiceService.refreshInvoicePriceIfUsd(existing.id);
-      const invoiceToShow = (refreshed?.invoice ?? existing) as typeof existing;
+      const invoiceToShow: InvoiceWithProduct = refreshed?.invoice ?? existing;
       if (refreshed?.priceChanged) {
         await ctx.reply(buildPriceUpdateNotice(refreshed.oldPrice, refreshed.newPrice));
       }
@@ -668,14 +765,14 @@ export function registerHandlers(bot: Bot<BotContext>): void {
           "",
           `🧾 شماره: *#${invoiceToShow.id}*`,
           `📦 مورد: *${invoiceItemLabel(invoiceToShow)}*`,
-          ...renderInvoiceAmountLines(invoiceToShow as any),
+          ...renderInvoiceAmountLines(invoiceToShow),
           `📊 وضعیت: *${invoiceToShow.status}*`,
           `⏳ انقضا: ${formatExpiresAt(invoiceToShow.expiresAt)}`,
         ].join("\n"),
         {
           parse_mode: "Markdown",
           reply_markup: pendingInvoiceKeyboard(invoiceToShow.id, {
-            hasDiscount: Boolean((invoiceToShow as any).discountCode),
+            hasDiscount: Boolean(invoiceToShow.discountCode),
           }),
         },
       );
@@ -703,10 +800,15 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const productId = Number(ctx.match![1]);
     const deliveryPreference = ctx.match![2] as "READY" | "CREDENTIALS_REQUIRED";
     const user = await invoiceService.ensureUser(BigInt(ctx.from.id));
-    const product = await catalogService.getProduct(productId);
+    const product = await catalogService.getProduct(productId, false);
 
     if (!product) {
       await ctx.answerCallbackQuery({ text: "محصول یافت نشد", show_alert: true });
+      return;
+    }
+
+    if (await isProductOutOfStockById(productId)) {
+      await ctx.answerCallbackQuery({ text: OUT_OF_STOCK_ALERT, show_alert: true });
       return;
     }
 
@@ -718,7 +820,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const existing = await invoiceService.getOpenInvoice(user.id);
     if (existing) {
       const refreshed = await invoiceService.refreshInvoicePriceIfUsd(existing.id);
-      const invoiceToShow = (refreshed?.invoice ?? existing) as typeof existing;
+      const invoiceToShow: InvoiceWithProduct = refreshed?.invoice ?? existing;
       if (refreshed?.priceChanged) {
         await ctx.reply(buildPriceUpdateNotice(refreshed.oldPrice, refreshed.newPrice));
       }
@@ -735,19 +837,25 @@ export function registerHandlers(bot: Bot<BotContext>): void {
           "",
           `🧾 شماره: *#${invoiceToShow.id}*`,
           `📦 مورد: *${invoiceItemLabel(invoiceToShow)}*`,
-          ...renderInvoiceAmountLines(invoiceToShow as any),
+          ...renderInvoiceAmountLines(invoiceToShow),
           `📊 وضعیت: *${invoiceToShow.status}*`,
           `⏳ انقضا: ${formatExpiresAt(invoiceToShow.expiresAt)}`,
         ].join("\n"),
         {
           parse_mode: "Markdown",
           reply_markup: pendingInvoiceKeyboard(invoiceToShow.id, {
-            hasDiscount: Boolean((invoiceToShow as any).discountCode),
+            hasDiscount: Boolean(invoiceToShow.discountCode),
           }),
         },
       );
       return;
     }
+
+    ctx.session.checkoutDeliveryPreference = deliveryPreference;
+
+    const guard = await verifyBeforeCheckout(productId);
+    const proceed = await handlePrePaymentGuardResult(ctx, user.id, guard);
+    if (!proceed) return;
 
     await ctx.answerCallbackQuery({
       text: deliveryPreference === "READY" ? "تحویل آنی انتخاب شد" : "تحویل روی ایمیل شخصی انتخاب شد",
@@ -760,6 +868,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         undefined,
         deliveryPreference,
       );
+      ctx.session.checkoutDeliveryPreference = undefined;
 
       await safeEdit(
         ctx,
@@ -768,7 +877,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
           "",
           `🧾 شماره: *#${invoice.id}*`,
           `${emojiForLabel(product.name)} محصول: *${product.name}*`,
-          ...renderInvoiceAmountLines(invoice as any),
+          ...renderInvoiceAmountLines(invoice),
           `📊 وضعیت: *${invoice.status}*`,
           `🚚 روش انتخاب شده: *${deliveryTypeLabel(deliveryPreference)}*`,
           "",
@@ -793,96 +902,98 @@ export function registerHandlers(bot: Bot<BotContext>): void {
 
   bot.callbackQuery(/^pay:(\d+)$/, async (ctx) => {
     const invoiceId = Number(ctx.match![1]);
+    await showPaymentMethodSelection(ctx, invoiceId);
+  });
+
+  bot.callbackQuery(/^pay:confirm_new:(\d+)$/, async (ctx) => {
+    const invoiceId = Number(ctx.match![1]);
+    await ctx.answerCallbackQuery({ text: "ادامه پرداخت…" });
+    await showPaymentMethodSelection(ctx, invoiceId, { skipLiveGuard: true });
+  });
+
+  bot.callbackQuery(/^pay:cancel_new:(\d+)$/, async (ctx) => {
+    const invoiceId = Number(ctx.match![1]);
     const user = await invoiceService.ensureUser(BigInt(ctx.from.id));
-    const pending = await invoiceService.getOpenInvoice(user.id);
+    try {
+      await invoiceService.cancelInvoice(user.id, invoiceId);
+    } catch {
+      /* ignore */
+    }
+    ctx.session.checkoutProductId = undefined;
+    await ctx.answerCallbackQuery({ text: "پرداخت لغو شد" });
+    await ctx.reply("❌ پرداخت لغو شد. می‌توانید از فروشگاه دوباره انتخاب کنید.", {
+      reply_markup: menuKb(false, ctx.from!.id),
+    });
+  });
 
-    if (!pending || pending.id !== invoiceId) {
-      await ctx.answerCallbackQuery({
-        text: "فاکتور در انتظار معتبر نیست",
-        show_alert: true,
-      });
+  bot.callbackQuery(/^buy:confirm_new:(\d+)$/, async (ctx) => {
+    const productId = Number(ctx.match![1]);
+    if (!ctx.from) return;
+    const user = await invoiceService.ensureUser(BigInt(ctx.from.id));
+    const product = await catalogService.getProduct(productId, false);
+    if (!product) {
+      await ctx.answerCallbackQuery({ text: "محصول یافت نشد", show_alert: true });
       return;
     }
 
-    if (pending.status !== "PENDING") {
-      await ctx.answerCallbackQuery({
-        text: `وضعیت فعلی: ${pending.status}`,
-        show_alert: true,
-      });
+    const deliveryPreference =
+      ctx.session.checkoutDeliveryPreference ??
+      (product.deliveryType === "USER_CHOICE" ? "READY" : undefined);
+
+    if (product.deliveryType === "USER_CHOICE" && !deliveryPreference) {
+      await ctx.answerCallbackQuery({ text: "ابتدا نوع تحویل را انتخاب کنید", show_alert: true });
       return;
     }
 
-    if (pending.expiresAt.getTime() <= Date.now()) {
-      await invoiceService.expireOverdue();
-      await ctx.answerCallbackQuery({ text: "فاکتور منقضی شده", show_alert: true });
-      await safeEdit(
-        ctx,
+    const guard = await verifyBeforeCheckout(productId);
+    if (guard.status === "OUT_OF_STOCK") {
+      await handlePrePaymentGuardResult(ctx, user.id, guard);
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: "ادامه خرید…" });
+
+    try {
+      const invoice = await invoiceService.createPendingInvoice(
+        user.id,
+        productId,
+        undefined,
+        deliveryPreference,
+      );
+      ctx.session.checkoutDeliveryPreference = undefined;
+      await ctx.reply(
         [
-          "⌛ *فاکتور منقضی شده*",
+          "✅ *فاکتور ساخته شد*",
           "",
-          `🧾 شماره: *#${invoiceId}*`,
+          `🧾 شماره: *#${invoice.id}*`,
+          `${emojiForLabel(product.name)} محصول: *${product.name}*`,
+          ...renderInvoiceAmountLines(invoice),
           "",
-          "لطفا دوباره از فروشگاه خرید کنید.",
+          "روش پرداخت را انتخاب کنید:",
         ].join("\n"),
         {
           parse_mode: "Markdown",
-          reply_markup: menuKb(false, ctx.from.id),
+          reply_markup: await buildCheckoutPaymentKeyboard(
+            invoice.id,
+            formatToman(user.balance),
+            { hasDiscount: false },
+          ),
         },
       );
-      return;
-    }
-
-    // Dynamic price recalculation for USD product invoices
-    const refreshed = await invoiceService.refreshInvoicePriceIfUsd(pending.id);
-    const currentPending = (refreshed?.invoice ?? pending) as typeof pending;
-    if (refreshed?.priceChanged) {
-      await ctx.reply(buildPriceUpdateNotice(refreshed.oldPrice, refreshed.newPrice));
-    }
-
-    const methods = await paymentMethodService.listActiveForButtons();
-    const swapEnabled = await settingsService.getBoolSetting(SWAPPAY_ENABLED, true);
-
-    if (methods.length === 0 && !swapEnabled && Number(user.balance) <= 0) {
-      await ctx.answerCallbackQuery({
-        text: "روش پرداخت فعالی نیست",
-        show_alert: true,
-      });
-      await safeEdit(
-        ctx,
-        [
-          "⚠️ *روش پرداخت در دسترس نیست*",
-          "",
-          "در حال حاضر امکان پرداخت کارت به کارت، سواپ ولت یا کیف پول وجود ندارد.",
-        ].join("\n"),
-        {
-          parse_mode: "Markdown",
-          reply_markup: pendingInvoiceKeyboard(invoiceId),
-        },
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(
+        ["⚠️ *ساخت فاکتور ناموفق بود*", "", msg].join("\n"),
+        { parse_mode: "Markdown", reply_markup: menuKb(false, ctx.from.id) },
       );
-      return;
     }
+  });
 
-    await ctx.answerCallbackQuery();
-    await safeEdit(
-      ctx,
-      [
-        "💳 *انتخاب روش پرداخت*",
-        "",
-        `🧾 فاکتور: *#${currentPending.id}*`,
-        `📦 مورد: *${invoiceItemLabel(currentPending)}*`,
-        ...renderInvoiceAmountLines(currentPending as any),
-        "",
-        "روش پرداخت را انتخاب کنید:",
-      ].join("\n"),
-      {
-        parse_mode: "Markdown",
-        reply_markup: await buildCheckoutPaymentKeyboard(
-          currentPending.id,
-          formatToman(user.balance),
-          { hasDiscount: Boolean((currentPending as any).discountCode) },
-        ),
-      },
-    );
+  bot.callbackQuery(Callbacks.buyCancelNewPrice, async (ctx) => {
+    ctx.session.checkoutProductId = undefined;
+    ctx.session.checkoutDeliveryPreference = undefined;
+    await ctx.answerCallbackQuery({ text: "خرید لغو شد" });
+    await ctx.reply("❌ خرید لغو شد.", { reply_markup: menuKb(false, ctx.from!.id) });
   });
 
   bot.callbackQuery(/^(?:discount:apply:|inv:dsc:)(\d+)$/, async (ctx) => {
@@ -890,9 +1001,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const invoiceId = Number(ctx.match![1]);
     ctx.session.discountInvoiceId = invoiceId;
     ctx.session.pendingInvoiceId = invoiceId;
-    try {
-      await ctx.conversation.exitAll();
-    } catch {}
+    await exitAllConversations(ctx);
     await ctx.conversation.enter("discountConversation");
   });
 
@@ -928,8 +1037,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       return;
     }
 
+    const guard = await verifyBeforePayment(invoiceId);
+    const proceed = await handlePrePaymentGuardResult(ctx, user.id, guard);
+    if (!proceed) return;
+
     const refreshed = await invoiceService.refreshInvoicePriceIfUsd(invoiceId);
-    const currentPending = (refreshed?.invoice ?? pending) as typeof pending;
+    const currentPending: InvoiceWithProduct = refreshed?.invoice ?? pending;
     if (refreshed?.priceChanged) {
       await ctx.reply(buildPriceUpdateNotice(refreshed.oldPrice, refreshed.newPrice));
     }
@@ -953,7 +1066,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
           reply_markup: await buildCheckoutPaymentKeyboard(
             invoiceId,
             formatToman(user.balance),
-            { hasDiscount: Boolean((currentPending as any).discountCode) },
+            { hasDiscount: Boolean(currentPending.discountCode) },
           ),
         },
       );
@@ -993,8 +1106,11 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         await ctx.answerCallbackQuery({ text: "موجودی کافی نیست", show_alert: true });
         return;
       }
-      console.error("wallet purchase failed:", err);
-      await ctx.answerCallbackQuery({ text: "خطا در پرداخت", show_alert: true });
+      logHandlerError("pay:wallet", err);
+      await ctx.answerCallbackQuery({
+        text: "مشکلی در پردازش پیش آمد، لطفاً دوباره تلاش کنید.",
+        show_alert: true,
+      });
     }
   });
 

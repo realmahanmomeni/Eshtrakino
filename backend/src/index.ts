@@ -14,12 +14,17 @@ import { startSwapWalletCron } from "./services/cron/SwapWalletCron";
 import { prisma } from "./lib/prisma";
 import { groupLogger } from "./services/logger/GroupLogger";
 import { backupService } from "./services/backup/BackupService";
+import { bootstrapCatalog } from "./services/catalog/bootstrapCatalog";
+import { exitAllConversations } from "./bot/utils/conversations";
+import { ensureWhiteLabelCatalog } from "./services/catalog/whiteLabelCatalog";
 import {
   AUTO_BACKUP_HOURS_KEY,
+  DEFAULT_PROFIT_MARGIN_PERCENT,
+  DEFAULT_PROFIT_MARGIN_PERCENT_KEY,
   LAST_AUTO_BACKUP_TIME_KEY,
   settingsService,
 } from "./services/settings/SettingsService";
-import { bootstrapCatalog } from "./services/catalog/bootstrapCatalog";
+import { lazyCacheService } from "./services/catalog/LazyCacheService";
 
 async function runAutoBackupCheck(bot: Bot<BotContext>): Promise<void> {
   const hours = await settingsService.getNumberSetting(AUTO_BACKUP_HOURS_KEY, 0);
@@ -75,6 +80,22 @@ async function main(): Promise<void> {
   // Ensure initial catalog integrity (Inspect-Before-Create)
   await bootstrapCatalog();
 
+  try {
+    const marginDefault = await settingsService.getSetting(DEFAULT_PROFIT_MARGIN_PERCENT_KEY);
+    if (!marginDefault) {
+      await settingsService.setSetting(
+        DEFAULT_PROFIT_MARGIN_PERCENT_KEY,
+        String(DEFAULT_PROFIT_MARGIN_PERCENT),
+      );
+    }
+    await ensureWhiteLabelCatalog();
+    await lazyCacheService.markCatalogSynced();
+    await lazyCacheService.hydrateFromSettings();
+    console.log("[CanbosoSync] Startup catalog + supplier sync complete (via ensureWhiteLabelCatalog).");
+  } catch (err) {
+    console.warn("[CanbosoSync] Startup sync skipped or failed:", err);
+  }
+
   // One-time startup check/cleanup: Clear individual product banners while keeping Category & SubCategory banners intact
   try {
     const clearedBanners = await prisma.product.updateMany({
@@ -110,17 +131,7 @@ async function main(): Promise<void> {
 
   // Forcibly exit any active conversation on /start before handlers run to prevent freeze/trapping
   bot.command("start", async (ctx, next) => {
-    try {
-      if (ctx.conversation) {
-        if (typeof ctx.conversation.exitAll === "function") {
-          await ctx.conversation.exitAll();
-        } else if (typeof (ctx.conversation as any).exit === "function") {
-          await (ctx.conversation as any).exit();
-        }
-      }
-    } catch (e) {
-      // ignore if no conversation was active
-    }
+    await exitAllConversations(ctx);
     return next();
   });
 

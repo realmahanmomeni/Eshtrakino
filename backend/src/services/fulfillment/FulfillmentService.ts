@@ -91,31 +91,47 @@ export class FulfillmentService {
 
     if (deliveryType === DeliveryType.SUPPLIER_AUTO) {
       try {
+        const { canbosoDispatchService } = await import("../suppliers/CanbosoDispatchService.js");
         const { supplierManager } = await import("../suppliers/index.js");
+
+        const queued = await canbosoDispatchService.queueAdminDispatch(
+          api,
+          invoice.id,
+          invoice.productId!,
+        );
+
+        if (queued) {
+          return;
+        }
+
         const success = await supplierManager.processAutoPurchase(invoice.id, invoice.productId!);
-        
+
         if (success) {
           await api.sendMessage(
             tgId,
             [
               "✅ پرداخت و سفارش اتوماتیک شما با موفقیت انجام شد.",
-              "اطلاعات محصول به زودی برای شما ارسال خواهد شد."
+              "اطلاعات محصول به زودی برای شما ارسال خواهد شد.",
             ].join("\n"),
             { parse_mode: "Markdown" },
           );
         } else {
-           await api.sendMessage(
+          await api.sendMessage(
             tgId,
             "✅ پرداخت شما تایید شد اما متاسفانه تامین کننده در حال حاضر غیرفعال است. ادمین به زودی سفارش شما را تحویل خواهد داد.",
           );
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error("Supplier Auto-Purchase Failed:", error);
         await api.sendMessage(
           tgId,
           "✅ پرداخت شما تایید شد اما در تحویل اتوماتیک مشکلی پیش آمد. ادمین وضعیت سفارش شما را بررسی خواهد کرد.",
         );
-        await groupLogger.logError(api, `⚠️ Supplier auto-purchase failed for invoice #${invoice.id}`, error);
+        await groupLogger.logError(
+          api,
+          `⚠️ Supplier auto-purchase failed for invoice #${invoice.id}`,
+          error,
+        );
       }
       return;
     }

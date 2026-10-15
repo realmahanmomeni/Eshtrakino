@@ -1,8 +1,11 @@
 import { supplierManager } from "./SupplierManager";
-import { QuantumVaultAdapter } from "./quantumvault/QuantumVaultAdapter";
+import { CanbosoAdapter } from "./adapters/CanbosoAdapter";
 
-// Register all adapters
-supplierManager.registerAdapter(new QuantumVaultAdapter());
+// Primary digital supplier: Canboso Telegram Buyer API
+supplierManager.registerAdapter(new CanbosoAdapter());
 
 export { supplierManager };
 export * from "./SupplierAdapter";
+export { canbosoAdapter } from "./adapters/CanbosoAdapter";
+export { canbosoSyncService, CANBOSO_SUPPLIER_NAME } from "./CanbosoSyncService";
+export { canbosoDispatchService } from "./CanbosoDispatchService";

@@ -56,7 +56,7 @@ export class QuantumVaultAdapter implements SupplierAdapter {
         // The caller (purchase method) provides AbortSignal and must handle it to throw UncertainError
         throw error;
       }
-      
+
       throw new SupplierNetworkError(`Network/Transport error: ${error.message}`);
     }
   }
@@ -86,13 +86,13 @@ export class QuantumVaultAdapter implements SupplierAdapter {
     if (!Array.isArray(products)) {
       throw new SupplierInvalidResponseError("Expected products array in response.");
     }
-    
+
     return products.map((p: any) => ({
       productKey: p.productKey || p.id,
       name: p.name || "Unknown Product",
-      deliveryFields: p.deliverFields || [], // Mapping deliverFields to standard deliveryFields
+      deliveryFields: p.deliverFields || [],
       variants: Array.isArray(p.variants) ? p.variants.map((v: any) => ({
-        variantKey: v.variantKey || v.id,
+        variantKey: v.variantKey || v.key || v.id,
         name: v.name || "Default",
         price: v.price || 0,
         stock: v.stock,
@@ -119,7 +119,7 @@ export class QuantumVaultAdapter implements SupplierAdapter {
       name: data.name || "Unknown Product",
       deliveryFields: data.deliverFields || [],
       variants: Array.isArray(data.variants) ? data.variants.map((v: any) => ({
-        variantKey: v.variantKey || v.id,
+        variantKey: v.variantKey || v.key || v.id,
         name: v.name || "Default",
         price: v.price || 0,
         stock: v.stock,
@@ -127,7 +127,12 @@ export class QuantumVaultAdapter implements SupplierAdapter {
     };
   }
 
-  async purchase(apiKey: string, mapping: SupplierProductMapping, expectedPrice?: number): Promise<PurchaseResult> {
+  async purchase(
+    apiKey: string,
+    mapping: SupplierProductMapping,
+    expectedPrice?: number,
+    _context?: import("../SupplierAdapter").SupplierPurchaseContext,
+  ): Promise<PurchaseResult> {
     const signal = AbortSignal.timeout(15000); // 15s timeout for purchase
 
     let response: Response;
@@ -163,6 +168,10 @@ export class QuantumVaultAdapter implements SupplierAdapter {
       let errorData: any = {};
       try { errorData = JSON.parse(errorText); } catch (e) {}
 
+      // 409 = Out of stock (documented QuantumVault status code)
+      if (response.status === 409) {
+        throw new SupplierOutOfStockError(errorData.message || "Product is out of stock.");
+      }
       if (response.status === 400 && (errorText.toLowerCase().includes("stock") || errorData.code === "OUT_OF_STOCK")) {
         throw new SupplierOutOfStockError(errorData.message || "Product is out of stock.");
       }
@@ -173,55 +182,300 @@ export class QuantumVaultAdapter implements SupplierAdapter {
         throw new SupplierProductNotFoundError(errorData.message || "Product or variant not found.");
       }
 
-      // If the API returns some other 4xx or 5xx that wasn't caught by fetchApi
-      throw new SupplierUnknownError(`Purchase failed with HTTP ${response.status}: ${errorText}`);
+      // Other 4xx or 5xx not caught by fetchApi
+      throw new SupplierUnknownError(`Purchase failed with HTTP ${response.status}: ${errorText.slice(0, 200)}`);
     }
 
-    // Success response parsing
-    const data: any = await response.json();
-    /* Documented response contains:
-      order.orderId
-      order.status
-      order.productKey
-      order.variantKey
-      order.quantity
-      order.totalCharged
-      order.items[].fields
-      order.createdAt
-    */
-    const order = data.order || data;
-    if (!order || !order.orderId) {
-      throw new SupplierInvalidResponseError("Order ID not found in purchase response.");
+    // -----------------------------------------------------------------------
+    // SUCCESS RESPONSE PARSING
+    //
+    // Actual POST /purchase schema (verified vs. live QuantumVault API docs, 2026-09-23):
+    //
+    //   {
+    //     "success": true,
+    //     "order": {
+    //       "requested": 1,
+    //       "fulfilled": 1,
+    //       "unitPrice": 0.25,
+    //       "totalCharged": 0.25,
+    //       "currency": "USD",
+    //       "items": [
+    //         {
+    //           "orderId":    "QV-8F3A21C9",
+    //           "purchaseId": "665f1c2e8a3b4d5e6f7a8b9c",
+    //           "product":    "Outlook Mail",
+    //           "productKey": "outlook_mail",
+    //           "variantKey": null,
+    //           "price":      0.25,
+    //           "currency":   "USD",
+    //           "deliveredAt":"2026-07-15T09:24:11.482Z",
+    //           "fields":     [ { "name": "email", "label": "Email", "value": "..." } ],
+    //           "data":       { "email": "..." }
+    //         }
+    //       ]
+    //     }
+    //   }
+    //
+    // ROOT CAUSE OF INVOICE #8 BUG:
+    //   The old parser read `data.order.orderId` which is ALWAYS undefined.
+    //   The correct location is `data.order.items[0].orderId`.
+    // -----------------------------------------------------------------------
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch (e) {
+      throw new SupplierInvalidResponseError(
+        "QuantumVault purchase response is not valid JSON."
+      );
     }
 
-    // Price protection check after the fact (if they charged more than we configured)
-    if (mapping.maxPriceLimit && order.totalCharged > Number(mapping.maxPriceLimit)) {
-      // Note: we can't un-purchase it, but we can flag it by throwing a specific error or logging.
-      // Ideally, price protection happens via a pre-check, but this verifies post-charge.
-      console.error(`PRICE ALERT: Charged ${order.totalCharged} which exceeds max limit ${mapping.maxPriceLimit}`);
+    if (!data || typeof data !== "object") {
+      throw new SupplierInvalidResponseError(
+        "QuantumVault purchase response is empty or not an object."
+      );
     }
 
-    // Extract delivery fields from items[0].deliverFields or fields
-    let deliveryPayload = "";
-    if (order.items && Array.isArray(order.items) && order.items.length > 0) {
-      deliveryPayload = JSON.stringify(order.items[0].deliverFields || order.items[0].fields || {});
+    // Business-level success check — HTTP 200 does not guarantee a completed purchase
+    if (data.success === false) {
+      const msg = (data.message || data.error || "Supplier reported business-level failure.") as string;
+      throw new SupplierUnknownError(`QuantumVault purchase rejected (success=false): ${msg}`);
     }
+
+    const order = data.order;
+    if (!order || typeof order !== "object") {
+      throw new SupplierInvalidResponseError(
+        `QuantumVault purchase response missing 'order' object. ` +
+        `Top-level keys: [${Object.keys(data).join(", ")}]`
+      );
+    }
+
+    const items: any[] = order.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new SupplierInvalidResponseError(
+        `QuantumVault purchase response 'order.items' is missing or empty. ` +
+        `order keys: [${Object.keys(order).join(", ")}]`
+      );
+    }
+
+    // We purchase qty=1, so items[0] is our single delivered unit.
+    const item = items[0]!;
+
+    // orderId is the per-unit supplier reference — critical for recovery via GET /orders/:orderId
+    const rawOrderId = item.orderId;
+    if (rawOrderId === undefined || rawOrderId === null || rawOrderId === "") {
+      throw new SupplierInvalidResponseError(
+        `QuantumVault purchase response item missing 'orderId'. ` +
+        `item keys: [${Object.keys(item).join(", ")}]`
+      );
+    }
+    const supplierOrderId = String(rawOrderId);
+
+    // Post-purchase price check — can't undo, but alert for admin review
+    const totalCharged = Number(order.totalCharged) || 0;
+    if (mapping.maxPriceLimit && totalCharged > Number(mapping.maxPriceLimit)) {
+      console.error(
+        `[QuantumVault] PRICE ALERT: productKey=${mapping.supplierProductKey} ` +
+        `charged=${totalCharged} exceeds maxPriceLimit=${mapping.maxPriceLimit} orderId=${supplierOrderId}`
+      );
+    }
+
+    // Partial delivery warning (order.fulfilled < order.requested)
+    const fulfilled = Number(order.fulfilled) || 0;
+    const requested = Number(order.requested) || 1;
+    if (fulfilled > 0 && fulfilled < requested) {
+      console.warn(
+        `[QuantumVault] Partial delivery: productKey=${mapping.supplierProductKey} ` +
+        `requested=${requested} fulfilled=${fulfilled} orderId=${supplierOrderId}`
+      );
+    }
+
+    const deliveryPayload = extractDeliveryPayload(item);
+
+    console.log(
+      `[QuantumVault] Purchase OK: productKey=${mapping.supplierProductKey} ` +
+      `orderId=${supplierOrderId} totalCharged=${totalCharged} ` +
+      `fieldsCount=${Array.isArray(item.fields) ? item.fields.length : 0}`
+    );
 
     return {
-      supplierOrderId: String(order.orderId),
-      costAmount: Number(order.totalCharged) || 0,
+      supplierOrderId,
+      costAmount: totalCharged,
       deliveryPayload,
     };
   }
 
-  async reconcile(apiKey: string, mapping: SupplierProductMapping, internalInvoiceId: number): Promise<PurchaseResult | null> {
-    // QuantumVault docs mention GET /orders/:orderId, but we might not have the orderId if it timed out!
-    // Since we don't have a known idempotency key or clientRef mechanism documented,
-    // safe reconciliation might be impossible without manual intervention or querying a hypothetical /orders list.
-    // For MVP: return null, requiring manual admin review.
-    return null;
+  async reconcile(
+    apiKey: string,
+    mapping: SupplierProductMapping,
+    internalInvoiceId: number
+  ): Promise<PurchaseResult | null> {
+    // Recovery path for PURCHASE_UNCERTAIN state (timeout/network drop during POST).
+    //
+    // QuantumVault API docs state:
+    //   "A timeout does not mean the purchase failed — it may have succeeded.
+    //    Call GET /orders to find the order, then GET /orders/:orderId to fetch
+    //    the delivered fields you already paid for."
+    //
+    // Strategy:
+    //   1. GET /orders to list recent orders.
+    //   2. Filter by productKey + variantKey within a 5-minute lookback window.
+    //   3. Exactly ONE match  → GET /orders/:orderId → return PurchaseResult.
+    //   4. Zero or ambiguous  → return null (manual admin review required).
+    //
+    // We return null (not throw) on any intermediate error so the caller preserves
+    // UNCERTAIN status rather than incorrectly marking the order FAILED.
+
+    const RECONCILE_LOOKBACK_MS = 5 * 60 * 1000; // 5 minutes
+
+    console.log(
+      `[QuantumVault] Reconciling uncertain purchase: internalInvoiceId=${internalInvoiceId} ` +
+      `productKey=${mapping.supplierProductKey}`
+    );
+
+    let ordersResponse: Response;
+    try {
+      ordersResponse = await this.fetchApi("/orders", apiKey);
+    } catch (error: any) {
+      console.error(`[QuantumVault] reconcile: GET /orders failed: ${error.message}`);
+      return null;
+    }
+
+    if (!ordersResponse.ok) {
+      console.error(`[QuantumVault] reconcile: GET /orders returned HTTP ${ordersResponse.status}`);
+      return null;
+    }
+
+    let ordersData: any;
+    try {
+      ordersData = await ordersResponse.json();
+    } catch (e) {
+      console.error("[QuantumVault] reconcile: GET /orders returned non-JSON body");
+      return null;
+    }
+
+    const orderList: any[] = Array.isArray(ordersData?.orders) ? ordersData.orders : [];
+    if (orderList.length === 0) {
+      console.log("[QuantumVault] reconcile: GET /orders returned empty list — cannot auto-reconcile.");
+      return null;
+    }
+
+    const now = Date.now();
+    const cutoff = now - RECONCILE_LOOKBACK_MS;
+
+    const candidates = orderList.filter((o: any) => {
+      if (o.productKey !== mapping.supplierProductKey) return false;
+      if (mapping.supplierVariantKey && o.variantKey !== mapping.supplierVariantKey) return false;
+      const dateMs = o.date ? new Date(o.date).getTime() : NaN;
+      // Exclude orders clearly outside the lookback window; include if date is absent/unparseable
+      if (!isNaN(dateMs) && dateMs < cutoff) return false;
+      return true;
+    });
+
+    if (candidates.length === 0) {
+      console.log(
+        `[QuantumVault] reconcile: no matching recent orders for productKey=${mapping.supplierProductKey}. ` +
+        `Manual admin review required.`
+      );
+      return null;
+    }
+
+    if (candidates.length > 1) {
+      // Ambiguous — cannot safely determine which order belongs to this invoice
+      console.warn(
+        `[QuantumVault] reconcile: ${candidates.length} candidate orders found for ` +
+        `productKey=${mapping.supplierProductKey} — ambiguous, manual admin review required.`
+      );
+      return null;
+    }
+
+    // Exactly one match — fetch its full delivery details
+    const candidate = candidates[0]!;
+    const candidateOrderId = String(candidate.orderId);
+
+    console.log(
+      `[QuantumVault] reconcile: fetching delivery for orderId=${candidateOrderId} ` +
+      `(internalInvoiceId=${internalInvoiceId})`
+    );
+
+    let detailResponse: Response;
+    try {
+      detailResponse = await this.fetchApi(`/orders/${encodeURIComponent(candidateOrderId)}`, apiKey);
+    } catch (error: any) {
+      console.error(`[QuantumVault] reconcile: GET /orders/${candidateOrderId} failed: ${error.message}`);
+      return null;
+    }
+
+    if (!detailResponse.ok) {
+      console.error(
+        `[QuantumVault] reconcile: GET /orders/${candidateOrderId} returned HTTP ${detailResponse.status}`
+      );
+      return null;
+    }
+
+    let detailData: any;
+    try {
+      detailData = await detailResponse.json();
+    } catch (e) {
+      console.error(`[QuantumVault] reconcile: GET /orders/${candidateOrderId} returned non-JSON body`);
+      return null;
+    }
+
+    // GET /orders/:orderId → { order: { orderId, purchaseId, fields, data, price, ... } }
+    const detailOrder = detailData?.order;
+    if (!detailOrder || typeof detailOrder !== "object") {
+      console.error(
+        `[QuantumVault] reconcile: GET /orders/${candidateOrderId} response missing 'order' object.`
+      );
+      return null;
+    }
+
+    const resolvedOrderId = String(detailOrder.orderId || candidateOrderId);
+    const deliveryPayload = extractDeliveryPayload(detailOrder);
+    const costAmount = Number(detailOrder.price) || Number(candidate.price) || 0;
+
+    console.log(
+      `[QuantumVault] reconcile: success — resolved orderId=${resolvedOrderId} for ` +
+      `internalInvoiceId=${internalInvoiceId}`
+    );
+
+    return {
+      supplierOrderId: resolvedOrderId,
+      costAmount,
+      deliveryPayload,
+    };
   }
 }
 
-// Register adapter to the singleton manager (can be done in a central index/bootstrap)
+/**
+ * Extracts a JSON delivery payload from a QuantumVault delivered item object.
+ *
+ * Works for:
+ *   - Items inside POST /purchase response   (order.items[])
+ *   - Single-order from GET /orders/:orderId (the 'order' object itself)
+ *
+ * Schema of the delivered item:
+ *   fields:     [{ name, label, value }]  — delivery details in display order
+ *   data:       { fieldName: value }       — same values, keyed by field name
+ *   purchaseId: string                     — internal purchase reference
+ *
+ * We store fields[] as the canonical payload (preserves labels/order for display).
+ * purchaseId is included for potential re-delivery or audit.
+ */
+function extractDeliveryPayload(item: any): string {
+  if (!item || typeof item !== "object") {
+    return JSON.stringify({});
+  }
+
+  const fields = Array.isArray(item.fields) ? item.fields : [];
+  const purchaseId: string | null = item.purchaseId ?? null;
+
+  return JSON.stringify({
+    fields,
+    purchaseId,
+    ...(item.data && typeof item.data === "object" ? { data: item.data } : {}),
+  });
+}
+
+// Register adapter to the singleton manager (done in the central index/bootstrap)
 // supplierManager.registerAdapter(new QuantumVaultAdapter());

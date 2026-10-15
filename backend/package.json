@@ -13,7 +13,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "db:seed": "node prisma/seed.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:canboso": "node dist/scripts/testCanbosoPurchaseFlow.js"
   },
   "engines": {
     "node": ">=20"

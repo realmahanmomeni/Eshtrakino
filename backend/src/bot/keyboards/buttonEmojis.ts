@@ -171,7 +171,15 @@ export function getCategoryCustomEmojiId(categoryName: string): string {
     return BUTTON_CUSTOM_EMOJIS.CHATGPT;
   }
 
-  // 6. Default Category
+  if (/ابزارهای ai|هوش مصنوعی/i.test(norm)) {
+    return BUTTON_CUSTOM_EMOJIS.AI_TOOLS;
+  }
+
+  if (/خدمات تلگرام|تلگرام/i.test(norm)) {
+    return BUTTON_CUSTOM_EMOJIS.TELEGRAM_STARS;
+  }
+
+  // Default Category
   return BUTTON_CUSTOM_EMOJIS.CATEGORY;
 }
 

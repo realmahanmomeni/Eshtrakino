@@ -62,6 +62,32 @@ export class GroupLogger {
     }
   }
 
+  async logCanbosoDispatchRequest(
+    api: Api,
+    text: string,
+    replyMarkup?: InlineKeyboard,
+  ): Promise<void> {
+    const chatId = await this.getLogGroupId();
+    if (!chatId) return;
+
+    const threadId = await this.ensureTopic(
+      api,
+      chatId,
+      LOG_PURCHASE_TOPIC_ID_KEY,
+      PURCHASE_TOPIC_NAME,
+    );
+
+    try {
+      await api.sendMessage(chatId, text, {
+        parse_mode: "Markdown",
+        message_thread_id: threadId,
+        reply_markup: replyMarkup,
+      });
+    } catch (err) {
+      console.warn("[GroupLogger] logCanbosoDispatchRequest failed:", err);
+    }
+  }
+
   async logPurchase(
     api: Api,
     invoiceId: number,

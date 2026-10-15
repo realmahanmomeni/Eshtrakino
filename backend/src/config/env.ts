@@ -39,6 +39,12 @@ const envSchema = z.object({
   SWAPPAY_WALLET_ADDRESS: z.string().optional().default(""),
   SWAPPAY_WALLET_NETWORK: z.string().optional().default("BSC"),
   SWAPPAY_POLL_INTERVAL_SEC: z.coerce.number().int().positive().default(90),
+  /** Canboso Telegram Buyer API (primary digital supplier). */
+  CANBOSO_API_KEY: z
+    .string()
+    .optional()
+    .default("tgb_c72724412e4364cf9e1934c1c4d5a53333b93dcf53b1d6c1"),
+  CANBOSO_BASE_URL: z.string().optional().default("https://canboso.com"),
 });
 
 const parsed = envSchema.safeParse(process.env);

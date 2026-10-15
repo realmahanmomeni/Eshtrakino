@@ -33,13 +33,10 @@ export async function addSupplierApiKeyConversation(
 
     const supKb = new InlineKeyboard();
 
-    // Check if QuantumVault/Quantum Bot is already in the list
-    const hasQuantum = suppliers.some(
-      (s) => s.name.toLowerCase() === "quantumvault" || s.name.toLowerCase() === "quantum bot",
-    );
+    const hasCanboso = suppliers.some((s) => /canboso/i.test(s.name));
 
-    if (!hasQuantum) {
-      supKb.text("🤖 کوانتوم بات (Quantum Bot / QuantumVault)", "conv:sup:preset:QuantumVault").row();
+    if (!hasCanboso) {
+      supKb.text("🤖 کنبوسو (Canboso)", "conv:sup:preset:Canboso").row();
     }
 
     for (const s of suppliers) {
@@ -65,8 +62,8 @@ export async function addSupplierApiKeyConversation(
 
     let supplierName: string;
 
-    if (supRes.data === "conv:sup:preset:QuantumVault") {
-      supplierName = "QuantumVault";
+    if (supRes.data === "conv:sup:preset:Canboso") {
+      supplierName = "Canboso";
     } else if (supRes.data === "conv:sup:new") {
       const nameRes = await waitTextOnPanel(
         conversation,
