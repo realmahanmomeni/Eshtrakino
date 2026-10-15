@@ -414,6 +414,7 @@ export class SupplierPendingImportService {
           subCategoryId: placement.subCategoryId,
           deliveryType: DeliveryType.SUPPLIER_AUTO,
           isActive: pending.stock > 0 && pending.isAvailable,
+          hierarchyLocked: true,
           description: pending.description,
           requiredFields: pending.requiredFields as Prisma.InputJsonValue,
         },

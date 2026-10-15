@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { isStarsCatalog } from "./starsPricingService";
+import { isAutomaticHierarchyBlocked } from "./catalogHierarchyGuard";
 
 export type BrandRule = {
   /** Bilingual subcategory label shown in Telegram UI */
@@ -47,7 +48,8 @@ export const SHOP_TAXONOMY: CategoryTaxonomy[] = [
       { subCategoryName: "LartAI | لارت", pattern: /lartai|lart|لارت/i },
       { subCategoryName: "Suno | سونو", pattern: /suno|سونو/i },
       { subCategoryName: "Lovable | لاوابل", pattern: /lovable|لاوابل/i },
-      { subCategoryName: "QuillBot | کوییل‌بات", pattern: /quillbot|کوییل.?بات/i },
+      { subCategoryName: "Muse AI | میوز", pattern: /muse\s*ai|میوز\s*ai/i },
+      { subCategoryName: "Freepik | فری‌پیک", pattern: /freepik|فری.?پیک/i },
     ],
   },
   {
@@ -101,7 +103,6 @@ export const SHOP_TAXONOMY: CategoryTaxonomy[] = [
       { subCategoryName: "Canva | کانوا", pattern: /canva|کانوا/i },
       { subCategoryName: "Adobe | ادوبی", pattern: /adobe|ادوبی/i },
       { subCategoryName: "CapCut | کپ‌کات", pattern: /capcut|کپ.?کات/i },
-      { subCategoryName: "Freepik | فری‌پیک", pattern: /freepik|فری.?پیک/i },
       { subCategoryName: "Envato Elements | اینواتو", pattern: /envato|اینواتو/i },
       { subCategoryName: "Wondershare | فیلمورا", pattern: /filmora|فیلمورا|wondershare/i },
       { subCategoryName: "Xingtu | شینگ‌تو", pattern: /xingtu|شینگ.?تو/i },
@@ -140,6 +141,7 @@ export const SHOP_TAXONOMY: CategoryTaxonomy[] = [
       { subCategoryName: "Udemy | یودمی", pattern: /udemy|یودمی/i },
       { subCategoryName: "Coursera | کورsera", pattern: /coursera|کورsera/i },
       { subCategoryName: "Grammarly | گرامرلی", pattern: /grammarly|گرامرلی/i },
+      { subCategoryName: "QuillBot | کوییل‌بات", pattern: /quillbot|کوییل.?بات/i },
       {
         subCategoryName: "LinkedIn | لینکدین",
         pattern: /linkedin|لینکدین|sales\s*navigator|سیلز\s*ناوی/i,
@@ -325,6 +327,13 @@ export async function assignProductToShopHierarchy(
   });
   if (!product) return null;
 
+  if (isAutomaticHierarchyBlocked(product)) {
+    return {
+      categoryId: product.categoryId,
+      subCategoryId: product.subCategoryId ?? 0,
+    };
+  }
+
   const telegramTaxonomy = SHOP_TAXONOMY.find((t) => t.key === "telegram_services")!;
   const telegramCat = await prisma.category.findFirst({
     where: {
@@ -433,6 +442,7 @@ export async function purgeCorruptedSubCategories(): Promise<number> {
   let purged = 0;
   const subs = await prisma.subCategory.findMany();
   for (const sub of subs) {
+    if (sub.isAdminManaged) continue;
     if (!isCorruptedSubCategoryName(sub.name)) continue;
 
     const products = await prisma.product.findMany({ where: { subCategoryId: sub.id } });
@@ -454,9 +464,12 @@ export async function purgeCorruptedSubCategories(): Promise<number> {
 
 /** Reassign every product using deterministic brand rules (Google One → Gemini, etc.). */
 export async function reassignAllProductsToBrandTaxonomy(): Promise<number> {
-  const products = await prisma.product.findMany();
+  const products = await prisma.product.findMany({
+    include: { category: true, subCategory: true },
+  });
   let moved = 0;
   for (const product of products) {
+    if (isAutomaticHierarchyBlocked(product)) continue;
     const beforeCat = product.categoryId;
     const beforeSub = product.subCategoryId;
     const result = await assignProductToShopHierarchy(product.id, product.name);
@@ -511,28 +524,25 @@ async function deactivateEmptyLegacyCategories(): Promise<void> {
   }
 }
 
-/** Remove subcategories with zero linked products (ghost / empty Adobe rows, etc.). */
+/**
+ * Soft-deactivate only corrupted empty subcategories (never hard-delete admin/shop subs).
+ * Previously deleted all empty subs — that removed admin-created Quilbot/Muse/Freepik rows.
+ */
 export async function deleteEmptySubCategories(): Promise<number> {
-  const used = await prisma.product.findMany({
-    where: { subCategoryId: { not: null } },
-    select: { subCategoryId: true },
-    distinct: ["subCategoryId"],
-  });
-  const usedIds = new Set(
-    used.map((r) => r.subCategoryId).filter((id): id is number => id != null),
-  );
-  const orphans = await prisma.subCategory.findMany({
-    where:
-      usedIds.size > 0
-        ? { id: { notIn: [...usedIds] } }
-        : undefined,
-    select: { id: true },
-  });
-  if (orphans.length === 0) return 0;
-  await prisma.subCategory.deleteMany({
-    where: { id: { in: orphans.map((o) => o.id) } },
-  });
-  return orphans.length;
+  let deactivated = 0;
+  const subs = await prisma.subCategory.findMany({ where: { isActive: true } });
+  for (const sub of subs) {
+    if (sub.isAdminManaged) continue;
+    if (!isCorruptedSubCategoryName(sub.name)) continue;
+    const count = await prisma.product.count({ where: { subCategoryId: sub.id } });
+    if (count > 0) continue;
+    await prisma.subCategory.update({
+      where: { id: sub.id },
+      data: { isActive: false },
+    });
+    deactivated += 1;
+  }
+  return deactivated;
 }
 
 export async function applyBrandTaxonomyMigration(): Promise<{
