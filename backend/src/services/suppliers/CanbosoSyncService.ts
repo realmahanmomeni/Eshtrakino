@@ -301,6 +301,10 @@ export class CanbosoSyncService {
       notifyApi,
     );
 
+    if (notifyApi) {
+      await supplierPendingImportService.flushPendingAdminNotifications(notifyApi);
+    }
+
     try {
       const balance = await canbosoAdapter.getBalance();
       await prisma.supplierApiKey.updateMany({
