@@ -148,6 +148,7 @@ model Product {
   invoices               Invoice[]
   inventory              ProductItem[]
   supplierProductMapping SupplierProductMapping?
+  supplierPendingImport  SupplierPendingImport?
 
   @@index([categoryId])
   @@index([subCategoryId])
@@ -332,6 +333,12 @@ enum SupplierOrderStatus {
   UNCERTAIN
 }
 
+enum SupplierPendingImportStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model Supplier {
   id        Int      @id @default(autoincrement())
   name      String   @unique
@@ -339,9 +346,45 @@ model Supplier {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  apiKeys  SupplierApiKey[]
-  mappings SupplierProductMapping[]
-  orders   SupplierOrder[]
+  apiKeys         SupplierApiKey[]
+  mappings        SupplierProductMapping[]
+  orders          SupplierOrder[]
+  pendingImports  SupplierPendingImport[]
+}
+
+/// Supplier catalog SKU awaiting admin approval before appearing in the shop.
+model SupplierPendingImport {
+  id                 Int                         @id @default(autoincrement())
+  supplierId         Int
+  supplierProductKey String
+  /// Empty string when the SKU has no variant id (unique index friendly).
+  supplierVariantKey String                      @default("")
+  status             SupplierPendingImportStatus @default(PENDING)
+  displayName        String
+  brandName          String?
+  supplierCostUsd    Float
+  profitMarginPercent Float?
+  description        String?                     @db.Text
+  requiredFields     Json                        @default("[]")
+  stock              Int                         @default(0)
+  isAvailable        Boolean                     @default(true)
+  /// Snapshot of normalized supplier row for debugging / re-import.
+  remoteSnapshot     Json?
+  categoryId         Int?
+  subCategoryId      Int?
+  productId          Int?                        @unique
+  reviewedByTelegramId BigInt?
+  reviewedAt         DateTime?
+  notifiedAt         DateTime?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  product  Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([supplierId, supplierProductKey, supplierVariantKey])
+  @@index([supplierId, status])
+  @@index([status, createdAt])
 }
 
 model SupplierApiKey {

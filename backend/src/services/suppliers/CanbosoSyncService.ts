@@ -1,4 +1,5 @@
 import { DeliveryType } from "@prisma/client";
+import type { Api } from "grammy";
 import { polishCustomerProductTitle } from "../catalog/productTitlePolish";
 import { prisma } from "../../lib/prisma";
 import { isInternalEshtrakinoFulfillment } from "../catalog/catalogAvailability";
@@ -9,11 +10,14 @@ import {
 } from "../catalog/catalogHierarchy";
 import { env } from "../../config/env";
 import { exchangeRateService, convertUsdToToman } from "../exchangeRateService";
+import { canbosoAdapter, type CanbosoCatalogProduct } from "./adapters/CanbosoAdapter";
+import { supplierCostUsdFromRemote } from "./canbosoCost";
 import {
-  canbosoAdapter,
-  extractSupplierCostUsdFromRow,
-  type CanbosoCatalogProduct,
-} from "./adapters/CanbosoAdapter";
+  isChargeOrVariantOfMappedParent,
+  requiresAdminApprovalBeforeImport,
+  supplierKeysFromRemote,
+} from "./supplierImportClassification";
+import { supplierPendingImportService } from "./SupplierPendingImportService";
 import { SupplierManager } from "./SupplierManager";
 import { sanitizeCustomerCatalogText } from "../../bot/utils/catalogUi";
 
@@ -28,6 +32,13 @@ type BulkCatalogCache = {
 };
 
 let bulkCatalogCache: BulkCatalogCache | null = null;
+
+let syncNotifyApi: Api | null = null;
+
+/** Registers bot API so new-supplier-product alerts can DM admins after sync. */
+export function setCanbosoSyncNotifyApi(api: Api): void {
+  syncNotifyApi = api;
+}
 
 type RemoteIndexes = {
   byId: Map<string, CanbosoCatalogProduct>;
@@ -75,28 +86,6 @@ function findRemoteProduct(
   }
 
   return undefined;
-}
-
-function supplierCostUsdFromRemote(
-  remote: CanbosoCatalogProduct,
-  usdRate: number,
-): number {
-  const row =
-    remote.raw && typeof remote.raw === "object"
-      ? (remote.raw as Record<string, unknown>)
-      : {};
-  const { costUsd, priceKey } = extractSupplierCostUsdFromRow(row, usdRate);
-  if (costUsd > 0) {
-    return costUsd;
-  }
-  if (remote.supplierCostUsd > 0) {
-    return remote.supplierCostUsd;
-  }
-  console.warn(
-    `[CanbosoSync] Missing cost for product ${remote.productId} - ${remote.name}`,
-    { priceKey, raw: row },
-  );
-  return 1;
 }
 
 export class CanbosoSyncService {
@@ -197,10 +186,11 @@ export class CanbosoSyncService {
    */
   async syncAllSupplierProductsBulk(options?: {
     forceRefresh?: boolean;
-  }): Promise<{ updated: number; imported: number }> {
+    notifyApi?: Api;
+  }): Promise<{ updated: number; imported: number; queuedForReview: number }> {
     if (!env.CANBOSO_API_KEY?.trim()) {
       console.warn("[CanbosoSync] CANBOSO_API_KEY missing; skipping bulk sync.");
-      return { updated: 0, imported: 0 };
+      return { updated: 0, imported: 0, queuedForReview: 0 };
     }
 
     await this.migrateMappedProductsToSupplierAuto();
@@ -243,7 +233,7 @@ export class CanbosoSyncService {
       } catch (err) {
         console.error("[CanbosoSync] Bulk catalog fetch failed:", err);
         if (!bulkCatalogCache) {
-          return { updated: 0, imported: 0 };
+          return { updated: 0, imported: 0, queuedForReview: 0 };
         }
       }
     }
@@ -302,10 +292,13 @@ export class CanbosoSyncService {
       );
     }
 
-    const imported = await this.importUnmappedCanbosoProducts(
+    const notifyApi = options?.notifyApi ?? syncNotifyApi;
+    const { imported, queuedForReview } = await this.importUnmappedCanbosoProducts(
       supplierId,
       remoteProducts,
       mappings,
+      usdRate,
+      notifyApi,
     );
 
     try {
@@ -318,11 +311,15 @@ export class CanbosoSyncService {
       /* non-fatal */
     }
 
-    return { updated, imported };
+    return { updated, imported, queuedForReview };
   }
 
   /** Idempotent sync — delegates to single-request bulk catalog (anti-429). */
-  async syncProductAvailability(): Promise<{ updated: number; imported: number }> {
+  async syncProductAvailability(): Promise<{
+    updated: number;
+    imported: number;
+    queuedForReview: number;
+  }> {
     return this.syncAllSupplierProductsBulk();
   }
 
@@ -421,7 +418,9 @@ export class CanbosoSyncService {
     supplierId: number,
     remoteProducts: CanbosoCatalogProduct[],
     existingMappings: Array<{ supplierProductKey: string }>,
-  ): Promise<number> {
+    usdRate: number,
+    notifyApi?: Api | null,
+  ): Promise<{ imported: number; queuedForReview: number }> {
     const mappedKeys = new Set<string>();
     for (const m of existingMappings) {
       mappedKeys.add(m.supplierProductKey);
@@ -432,12 +431,29 @@ export class CanbosoSyncService {
         !(p.variantId && mappedKeys.has(p.variantId)) &&
         !(p.parentProductId && mappedKeys.has(p.parentProductId)),
     );
-    if (unmapped.length === 0) return 0;
+    if (unmapped.length === 0) return { imported: 0, queuedForReview: 0 };
+
+    const needsReview = unmapped.filter((p) =>
+      requiresAdminApprovalBeforeImport(p, mappedKeys),
+    );
+    const autoImportCandidates = unmapped.filter(
+      (p) => !requiresAdminApprovalBeforeImport(p, mappedKeys),
+    );
+
+    let queuedForReview = 0;
+    if (needsReview.length > 0) {
+      queuedForReview = await supplierPendingImportService.queueNewSupplierProductsForReview(
+        supplierId,
+        needsReview,
+        mappedKeys,
+        usdRate,
+        notifyApi ? { api: notifyApi } : undefined,
+      );
+    }
 
     let imported = 0;
-    const usdRate = await exchangeRateService.getUsdToTomanRate();
 
-    for (const remote of unmapped) {
+    for (const remote of autoImportCandidates) {
       const existingByName = await prisma.product.findFirst({
         where: { name: remote.name },
         include: { supplierProductMapping: true },
@@ -469,61 +485,91 @@ export class CanbosoSyncService {
 
       if (existingByName) continue;
 
+      if (
+        isChargeOrVariantOfMappedParent(remote, mappedKeys) &&
+        remote.parentProductId
+      ) {
+        const parentMappedProduct = await prisma.product.findFirst({
+          where: {
+            supplierProductMapping: {
+              supplierId,
+              supplierProductKey: remote.parentProductId,
+            },
+          },
+        });
+        if (parentMappedProduct) {
+          await this.autoImportRemoteProduct(supplierId, remote, usdRate, {
+            categoryId: parentMappedProduct.categoryId,
+          });
+          imported += 1;
+          continue;
+        }
+      }
+
       const categoryId = await this.defaultImportCategoryId();
       if (categoryId == null) continue;
 
-      const supplierCostUsd =
-        remote.supplierPriceToman > 0
-          ? supplierCostUsdFromRemote(remote, usdRate)
-          : 1;
-
-      const product = await prisma.product.create({
-        data: {
-          name: polishCustomerProductTitle(remote.brandName ?? remote.name),
-          price: convertUsdToToman(supplierCostUsd, usdRate),
-          currency: "USD",
-          usdPrice: supplierCostUsd,
-          supplierCostUsd,
-          categoryId,
-          deliveryType: DeliveryType.SUPPLIER_AUTO,
-          isActive: remote.stock > 0 && remote.isAvailable,
-          description: remote.description?.trim()
-            ? sanitizeCustomerCatalogText(remote.description).trim()
-            : "تحویل دیجیتال از طریق اشتراکینو",
-          requiredFields: remote.requiredFields,
-        },
-      });
-
-      await assignProductToShopHierarchy(product.id, remote.brandName ?? remote.name);
-
-      const supplierProductKey = remote.parentProductId ?? remote.productId;
-      const supplierVariantKey =
-        remote.variantId && remote.variantId !== supplierProductKey
-          ? remote.variantId
-          : null;
-
-      await prisma.supplierProductMapping.create({
-        data: {
-          productId: product.id,
-          supplierId,
-          supplierProductKey,
-          supplierVariantKey,
-          isAutoPurchase: true,
-        },
-      });
-
-      const { applyMarginPricingToProduct } = await import(
-        "../catalog/profitMarginService.js"
-      );
-      await applyMarginPricingToProduct(product.id);
+      await this.autoImportRemoteProduct(supplierId, remote, usdRate, { categoryId });
       imported += 1;
     }
 
     if (imported > 0) {
       console.log(`[CanbosoSync] Imported ${imported} new supplier product(s).`);
     }
+    if (queuedForReview > 0) {
+      console.log(
+        `[CanbosoSync] Queued ${queuedForReview} new supplier product(s) for admin review.`,
+      );
+    }
 
-    return imported;
+    return { imported, queuedForReview };
+  }
+
+  private async autoImportRemoteProduct(
+    supplierId: number,
+    remote: CanbosoCatalogProduct,
+    usdRate: number,
+    placement: { categoryId: number; subCategoryId?: number | null },
+  ): Promise<void> {
+    const supplierCostUsd =
+      remote.supplierPriceToman > 0 ? supplierCostUsdFromRemote(remote, usdRate) : 1;
+
+    const { supplierProductKey, supplierVariantKey: variantKeyRaw } =
+      supplierKeysFromRemote(remote);
+    const supplierVariantKey = variantKeyRaw || null;
+
+    const product = await prisma.product.create({
+      data: {
+        name: polishCustomerProductTitle(remote.brandName ?? remote.name),
+        price: convertUsdToToman(supplierCostUsd, usdRate),
+        currency: "USD",
+        usdPrice: supplierCostUsd,
+        supplierCostUsd,
+        categoryId: placement.categoryId,
+        subCategoryId: placement.subCategoryId ?? null,
+        deliveryType: DeliveryType.SUPPLIER_AUTO,
+        isActive: remote.stock > 0 && remote.isAvailable,
+        description: remote.description?.trim()
+          ? sanitizeCustomerCatalogText(remote.description).trim()
+          : "تحویل دیجیتال از طریق اشتراکینو",
+        requiredFields: remote.requiredFields,
+      },
+    });
+
+    await assignProductToShopHierarchy(product.id, remote.brandName ?? remote.name);
+
+    await prisma.supplierProductMapping.create({
+      data: {
+        productId: product.id,
+        supplierId,
+        supplierProductKey,
+        supplierVariantKey,
+        isAutoPurchase: true,
+      },
+    });
+
+    const { applyMarginPricingToProduct } = await import("../catalog/profitMarginService.js");
+    await applyMarginPricingToProduct(product.id);
   }
 
   private async defaultImportCategoryId(): Promise<number | null> {

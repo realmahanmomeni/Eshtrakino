@@ -124,6 +124,7 @@ import {
   setProductProfitMarginConversation,
 } from "./supplierPriceAdmin";
 import { isSupplierMarginAdminProduct } from "../../services/catalog/profitMarginService";
+import { registerSupplierPendingImportAdmin } from "./supplierPendingAdmin";
 
 const RECEIPT_STATUS_LABELS: Record<string, string> = {
   AWAITING_APPROVAL: "در انتظار تایید",
@@ -2233,5 +2234,6 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await ctx.answerCallbackQuery({ text: result.message, show_alert: true }).catch(() => {});
   });
 
+  registerSupplierPendingImportAdmin(bot);
   bot.use(adminBase);
 }

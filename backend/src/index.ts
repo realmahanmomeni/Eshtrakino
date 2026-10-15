@@ -25,6 +25,7 @@ import {
   settingsService,
 } from "./services/settings/SettingsService";
 import { lazyCacheService } from "./services/catalog/LazyCacheService";
+import { canbosoSyncService, setCanbosoSyncNotifyApi } from "./services/suppliers/CanbosoSyncService";
 
 async function runAutoBackupCheck(bot: Bot<BotContext>): Promise<void> {
   const hours = await settingsService.getNumberSetting(AUTO_BACKUP_HOURS_KEY, 0);
@@ -138,6 +139,11 @@ async function main(): Promise<void> {
   // Admin conversations + /admin must register before general handlers that might swallow updates
   registerAdmin(bot);
   registerHandlers(bot);
+
+  setCanbosoSyncNotifyApi(bot.api);
+  void canbosoSyncService.syncProductAvailability().catch((err) => {
+    console.warn("[CanbosoSync] Post-start supplier sync failed:", err);
+  });
 
   bot.catch((err) => {
     const e = err.error;
