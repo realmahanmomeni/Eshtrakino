@@ -3,6 +3,11 @@
  * Idempotent — safe to run on every sync.
  */
 
+import {
+  isolateEmbeddedLatin,
+  normalizeArabicToPersianChars,
+} from "../../lib/telegramLabel";
+
 function normalizeKey(input: string): string {
   return input
     .replace(/[\u064A\u0649]/g, "ی")
@@ -49,6 +54,9 @@ function stripTitleGarbage(name: string): string {
     .replace(/\(\s*۲۵\s*روز\s*گارانتی\s*\)/gi, "")
     .replace(/یک\s*پیش[\w\s]*\.?\.?\.?/gi, "")
     .replace(/\bFW\b/gi, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\[\s*\]/g, "")
+    .replace(/[-—–]+\s*$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -93,7 +101,9 @@ export function polishCustomerProductTitle(rawName: string): string {
   let name = stripTitleGarbage(trimmed);
   name = applySemanticAliases(name);
   name = normalizeDurationPhrases(name);
-  return name.replace(/\s+/g, " ").trim() || trimmed;
+  name = normalizeArabicToPersianChars(name);
+  name = name.replace(/\s+/g, " ").trim() || trimmed;
+  return isolateEmbeddedLatin(name);
 }
 
 export async function polishAllProductTitles(): Promise<number> {

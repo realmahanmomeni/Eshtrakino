@@ -9,12 +9,21 @@ import { adminSuppliersKeyboard } from "./keyboards";
 import { catalogService } from "../../services/catalog/CatalogService";
 import { prisma } from "../../lib/prisma";
 import {
+  PENDING_LIST_PAGE_SIZE,
   buildPendingImportSummaryHtml,
+  buildPendingPlacementConfirmHtml,
+  formatPendingDisplayName,
   pendingImportActionKeyboard,
+  pendingImportConfirmKeyboard,
   supplierPendingImportService,
 } from "../../services/suppliers/SupplierPendingImportService";
 import { emojiForLabel } from "../keyboards/grid";
 import { ensurePanel, panelFromCtx, waitTextOnPanel, type PanelRef } from "../conversations/wait";
+import { truncateInlineButtonLabel } from "../../lib/telegramLabel";
+import { parseProfitMarginPercentInput } from "../../services/catalog/profitMarginInput";
+
+type ListFilter = "PENDING" | "REJECTED";
+
 async function guardCatalogAdmin(ctx: BotContext): Promise<boolean> {
   if (
     !ctx.from ||
@@ -27,11 +36,14 @@ async function guardCatalogAdmin(ctx: BotContext): Promise<boolean> {
   return true;
 }
 
-function pendingCategoryKeyboard(pendingId: number, categories: Array<{ id: number; name: string }>): InlineKeyboard {
+function pendingCategoryKeyboard(
+  pendingId: number,
+  categories: Array<{ id: number; name: string }>,
+): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const c of categories) {
-    const label = `${emojiForLabel(c.name)} ${c.name}`;
-    kb.text(label.length > 64 ? `${label.slice(0, 61)}…` : label, `adm:sup:pend:cat:${pendingId}:${c.id}`).row();
+    const label = truncateInlineButtonLabel(`${emojiForLabel(c.name)} ${c.name}`);
+    kb.text(label, `adm:sup:pend:cat:${pendingId}:${c.id}`).row();
   }
   kb.text("🔙 بازگشت", `adm:sup:pend:v:${pendingId}`).row();
   return kb;
@@ -44,53 +56,134 @@ function pendingSubCategoryKeyboard(
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const s of subs) {
-    const label = `🔹 ${s.name}`;
-    kb.text(label.length > 64 ? `${label.slice(0, 61)}…` : label, `adm:sup:pend:sub:${pendingId}:${s.id}`).row();
+    const label = truncateInlineButtonLabel(`🔹 ${s.name}`);
+    kb.text(label, `adm:sup:pend:sub:${pendingId}:${s.id}`).row();
   }
   kb.text("🔙 بازگشت", `adm:sup:pend:accept:${pendingId}`).row();
   return kb;
 }
 
-async function presentPendingList(ctx: BotContext): Promise<void> {
-  const rows = await prisma.supplierPendingImport.findMany({
-    where: {
-      status: { in: [SupplierPendingImportStatus.PENDING, SupplierPendingImportStatus.REJECTED] },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 20,
-  });
+function parseListCallback(data: string): { filter: ListFilter; page: number } {
+  const m = /^adm:sup:pend:list:(PENDING|REJECTED):(\d+)$/.exec(data);
+  if (m) {
+    return { filter: m[1] as ListFilter, page: Number(m[2]) };
+  }
+  return { filter: "PENDING", page: 0 };
+}
+
+async function presentPendingList(
+  ctx: BotContext,
+  filter: ListFilter = "PENDING",
+  page = 0,
+): Promise<void> {
+  const status =
+    filter === "PENDING"
+      ? SupplierPendingImportStatus.PENDING
+      : SupplierPendingImportStatus.REJECTED;
+
+  const [total, pendingCount, rejectedCount, rows] = await Promise.all([
+    prisma.supplierPendingImport.count({ where: { status } }),
+    prisma.supplierPendingImport.count({
+      where: { status: SupplierPendingImportStatus.PENDING },
+    }),
+    prisma.supplierPendingImport.count({
+      where: { status: SupplierPendingImportStatus.REJECTED },
+    }),
+    prisma.supplierPendingImport.findMany({
+      where: { status },
+      orderBy: { createdAt: "desc" },
+      skip: page * PENDING_LIST_PAGE_SIZE,
+      take: PENDING_LIST_PAGE_SIZE,
+    }),
+  ]);
+
+  const kb = new InlineKeyboard();
+  kb
+    .text(
+      filter === "PENDING" ? "⏳ در انتظار ✓" : "⏳ در انتظار",
+      "adm:sup:pend:list:PENDING:0",
+    )
+    .text(
+      filter === "REJECTED" ? "🚫 رد شده ✓" : "🚫 رد شده",
+      "adm:sup:pend:list:REJECTED:0",
+    )
+    .row();
 
   if (rows.length === 0) {
+    kb.text("🔙 بازگشت", "adm:suppliers").row();
     await safeEdit(
       ctx,
       [
         "📥 *محصولات جدید تامین‌کننده*",
         "",
-        "در حال حاضر مورد در انتظار یا رد‌شده‌ای وجود ندارد.",
+        `⏳ در انتظار: *${pendingCount}*`,
+        `🚫 رد شده: *${rejectedCount}*`,
+        "",
+        filter === "PENDING"
+          ? "مورد در انتظاری وجود ندارد."
+          : "مورد رد‌شده‌ای وجود ندارد.",
       ].join("\n"),
-      adminSuppliersKeyboard(),
+      { parse_mode: "Markdown", reply_markup: kb },
     );
     return;
   }
 
-  const kb = new InlineKeyboard();
   for (const row of rows) {
-    const icon =
-      row.status === SupplierPendingImportStatus.PENDING ? "⏳" : "🚫";
-    const label = `${icon} ${row.displayName}`.slice(0, 60);
+    const icon = filter === "PENDING" ? "⏳" : "🚫";
+    const label = truncateInlineButtonLabel(
+      `${icon} ${formatPendingDisplayName(row.displayName)}`,
+      60,
+    );
     kb.text(label, `adm:sup:pend:v:${row.id}`).row();
   }
+
+  const pageCount = Math.max(1, Math.ceil(total / PENDING_LIST_PAGE_SIZE));
+  if (pageCount > 1) {
+    if (page > 0) {
+      kb.text("◀️ قبلی", `adm:sup:pend:list:${filter}:${page - 1}`);
+    }
+    if (page + 1 < pageCount) {
+      kb.text("بعدی ▶️", `adm:sup:pend:list:${filter}:${page + 1}`);
+    }
+    kb.row();
+  }
+
   kb.text("🔙 بازگشت", "adm:suppliers").row();
+
+  const from = page * PENDING_LIST_PAGE_SIZE + 1;
+  const to = page * PENDING_LIST_PAGE_SIZE + rows.length;
 
   await safeEdit(
     ctx,
     [
       "📥 *محصولات جدید تامین‌کننده*",
       "",
-      "موارد زیر از سینک Canboso آمده‌اند و هنوز در فروشگاه نیستند:",
+      `⏳ در انتظار: *${pendingCount}*`,
+      `🚫 رد شده: *${rejectedCount}*`,
+      "",
+      filter === "PENDING"
+        ? `نمایش *${from}–${to}* از *${total}* مورد در انتظار:`
+        : `نمایش *${from}–${to}* از *${total}* مورد رد‌شده:`,
     ].join("\n"),
     { parse_mode: "Markdown", reply_markup: kb },
   );
+}
+
+async function presentPlacementConfirm(ctx: BotContext, pendingId: number): Promise<void> {
+  const row = await prisma.supplierPendingImport.findUnique({ where: { id: pendingId } });
+  if (!row || row.status !== SupplierPendingImportStatus.PENDING) {
+    await safeEdit(ctx, "⚠️ این درخواست قبلاً بررسی شده است.", adminSuppliersKeyboard());
+    return;
+  }
+  const summary = await buildPendingPlacementConfirmHtml(row);
+  if (!summary) {
+    await safeEdit(ctx, "⚠️ ابتدا دسته‌بندی را انتخاب کنید.", adminSuppliersKeyboard());
+    return;
+  }
+  await safeEdit(ctx, summary, {
+    parse_mode: "HTML",
+    reply_markup: pendingImportConfirmKeyboard(pendingId),
+  });
 }
 
 export async function setPendingImportMarginConversation(
@@ -111,7 +204,7 @@ export async function setPendingImportMarginConversation(
   let prompt = [
     "✏️ <b>ویرایش درصد سود (محصول جدید)</b>",
     "",
-    "درصد سود را به صورت عدد انگلیسی وارد کنید (مثال: 20):",
+    "درصد سود را به صورت عدد انگلیسی وارد کنید (مثال: 20 یا 12.5):",
     "",
     "▫️ برای انصراف /cancel را ارسال کنید.",
   ].join("\n");
@@ -127,6 +220,21 @@ export async function setPendingImportMarginConversation(
         prisma.supplierPendingImport.findUnique({ where: { id: pendingId } }),
       );
       if (row) {
+        if (row.categoryId != null) {
+          const summary = await conversation.external(() =>
+            buildPendingPlacementConfirmHtml(row),
+          );
+          if (summary) {
+            await ensurePanel(
+              ctx,
+              summary,
+              pendingImportConfirmKeyboard(row.id),
+              panel,
+              { parse_mode: "HTML" },
+            );
+            return;
+          }
+        }
         const summary = await conversation.external(() => buildPendingImportSummaryHtml(row));
         await ensurePanel(
           ctx,
@@ -139,17 +247,21 @@ export async function setPendingImportMarginConversation(
       return;
     }
 
-    const normalized = input.text.replace(/[۰-۹]/g, (d) =>
-      String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)),
-    );
-    const value = Number(normalized.replace(/,/g, "."));
-    if (!Number.isFinite(value) || value <= 0) {
-      prompt = "⚠️ عدد نامعتبر. لطفاً درصد سود مثبت وارد کنید:";
+    const parsed = parseProfitMarginPercentInput(input.text);
+    if (!parsed.ok) {
+      prompt = [
+        parsed.errorMessage,
+        "",
+        "لطفاً درصد سود را دوباره وارد کنید (مثال: 20 یا 12.5):",
+        "",
+        "▫️ برای انصراف /cancel را ارسال کنید.",
+      ].join("\n");
+      await ensurePanel(ctx, parsed.errorMessage, undefined, panel, { parse_mode: "HTML" });
       continue;
     }
 
     const row = await conversation.external(async () => {
-      await supplierPendingImportService.updatePendingMargin(pendingId, value);
+      await supplierPendingImportService.updatePendingMargin(pendingId, parsed.value);
       return prisma.supplierPendingImport.findUnique({ where: { id: pendingId } });
     });
 
@@ -158,10 +270,24 @@ export async function setPendingImportMarginConversation(
       return;
     }
 
+    if (row.categoryId != null) {
+      const summary = await conversation.external(() => buildPendingPlacementConfirmHtml(row));
+      if (summary) {
+        await ensurePanel(
+          ctx,
+          [`✅ درصد سود به <b>${parsed.value}%</b> تنظیم شد.`, "", summary].join("\n"),
+          pendingImportConfirmKeyboard(row.id),
+          panel,
+          { parse_mode: "HTML" },
+        );
+        return;
+      }
+    }
+
     const summary = await conversation.external(() => buildPendingImportSummaryHtml(row));
     await ensurePanel(
       ctx,
-      [`✅ درصد سود به <b>${value}%</b> تنظیم شد.`, "", summary].join("\n"),
+      [`✅ درصد سود به <b>${parsed.value}%</b> تنظیم شد.`, "", summary].join("\n"),
       pendingImportActionKeyboard(row.id, row.status),
       panel,
       { parse_mode: "HTML" },
@@ -177,13 +303,14 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
   admin.callbackQuery("adm:sup:pending", async (ctx) => {
     if (!(await guardCatalogAdmin(ctx))) return;
     await ctx.answerCallbackQuery();
-    await presentPendingList(ctx);
+    await presentPendingList(ctx, "PENDING", 0);
   });
 
-  admin.callbackQuery("adm:sup:pend:list", async (ctx) => {
+  admin.callbackQuery(/^adm:sup:pend:list:(PENDING|REJECTED):(\d+)$/, async (ctx) => {
     if (!(await guardCatalogAdmin(ctx))) return;
     await ctx.answerCallbackQuery();
-    await presentPendingList(ctx);
+    const { filter, page } = parseListCallback(ctx.callbackQuery.data);
+    await presentPendingList(ctx, filter, page);
   });
 
   admin.callbackQuery(/^adm:sup:pend:v:(\d+)$/, async (ctx) => {
@@ -249,7 +376,7 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
       [
         "📂 <b>انتخاب دسته‌بندی</b>",
         "",
-        `محصول: <b>${row.displayName.replace(/</g, "&lt;")}</b>`,
+        `محصول: <b>${formatPendingDisplayName(row.displayName).replace(/</g, "&lt;")}</b>`,
         "",
         "دسته‌بندی فروشگاه را انتخاب کنید:",
       ].join("\n"),
@@ -268,24 +395,16 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
 
     const subs = await catalogService.listSubCategoriesByCategory(categoryId, true);
     if (subs.length === 0) {
-      const result = await supplierPendingImportService.approveAndCreateProduct(
+      const draft = await supplierPendingImportService.savePlacementDraft(
         pendingId,
         categoryId,
         null,
-        BigInt(ctx.from!.id),
       );
-      await ctx.answerCallbackQuery({ text: result.message, show_alert: true });
-      if (result.ok && result.productId) {
-        await safeEdit(
-          ctx,
-          [
-            "✅ <b>محصول به فروشگاه اضافه شد</b>",
-            "",
-            `شناسه محصول: <code>${result.productId}</code>`,
-          ].join("\n"),
-          { parse_mode: "HTML", reply_markup: adminSuppliersKeyboard() },
-        );
+      if (!draft.ok) {
+        await ctx.answerCallbackQuery({ text: draft.message, show_alert: true });
+        return;
       }
+      await presentPlacementConfirm(ctx, pendingId);
       return;
     }
 
@@ -305,6 +424,7 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
 
   admin.callbackQuery(/^adm:sup:pend:sub:(\d+):(\d+)$/, async (ctx) => {
     if (!(await guardCatalogAdmin(ctx))) return;
+    await ctx.answerCallbackQuery();
     const pendingId = Number(ctx.match![1]);
     const subCategoryId = Number(ctx.match![2]);
 
@@ -317,10 +437,25 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
       return;
     }
 
-    const result = await supplierPendingImportService.approveAndCreateProduct(
+    const draft = await supplierPendingImportService.savePlacementDraft(
       pendingId,
       sub.categoryId,
       subCategoryId,
+    );
+    if (!draft.ok) {
+      await ctx.answerCallbackQuery({ text: draft.message, show_alert: true });
+      return;
+    }
+
+    await presentPlacementConfirm(ctx, pendingId);
+  });
+
+  admin.callbackQuery(/^adm:sup:pend:confirm:(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    const pendingId = Number(ctx.match![1]);
+
+    const result = await supplierPendingImportService.approveAndCreateProduct(
+      pendingId,
       BigInt(ctx.from!.id),
     );
     await ctx.answerCallbackQuery({ text: result.message, show_alert: !result.ok });
@@ -334,6 +469,8 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
         ].join("\n"),
         { parse_mode: "HTML", reply_markup: adminSuppliersKeyboard() },
       );
+    } else if (!result.ok) {
+      await presentPlacementConfirm(ctx, pendingId);
     }
   });
 

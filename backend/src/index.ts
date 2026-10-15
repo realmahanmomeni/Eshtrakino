@@ -144,6 +144,13 @@ async function main(): Promise<void> {
   void canbosoSyncService.syncProductAvailability().catch((err) => {
     console.warn("[CanbosoSync] Post-start supplier sync failed:", err);
   });
+  void import("./services/suppliers/SupplierPendingImportService.js")
+    .then(({ supplierPendingImportService }) =>
+      supplierPendingImportService.flushPendingAdminNotifications(bot.api),
+    )
+    .catch((err) => {
+      console.warn("[CanbosoSync] Pending admin notification flush failed:", err);
+    });
 
   bot.catch((err) => {
     const e = err.error;
