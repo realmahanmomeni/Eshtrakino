@@ -792,6 +792,7 @@ export function adminSuppliersKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
   kb.text("➕ افزودن کلید تامین‌کننده (API Key)", "adm:sup:addkey").row();
   kb.text("🔄 تنظیم نگاشت محصولات (Mapping)", "adm:sup:map").row();
+  kb.text("📥 محصولات جدید در انتظار", "adm:sup:pending").row();
   appendNavBar(kb, {
     text: "🔙 بازگشت به پنل",
     data: Callbacks.adminHome,
