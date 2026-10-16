@@ -199,7 +199,7 @@ export function shopProductButtonLabels(
     } else if ((counts.get(p.base) ?? 0) > 1 && !p.price) {
       displayName = `${displayName} #${p.id}`;
     }
-    labels.set(p.id, formatShopProductInlineLabel(displayName, p.price));
+    labels.set(p.id, formatShopProductInlineLabel(displayName));
   }
   return labels;
 }
@@ -254,7 +254,7 @@ export function categoryContentsKeyboard(
       const customEmojiId = getProductCustomEmojiId(p.name);
       const namePart =
         labelById.get(p.id) ??
-        formatShopProductInlineLabel(cleanProductLabel(p.name), p.formattedPrice);
+        formatShopProductInlineLabel(cleanProductLabel(p.name));
       const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
       return {
         text: label,
@@ -324,7 +324,7 @@ export function servicePlansKeyboard(
     const customEmojiId = getProductCustomEmojiId(p.name);
     const namePart =
       labelById.get(p.id) ??
-      formatShopProductInlineLabel(cleanProductLabel(p.name), p.formattedPrice);
+      formatShopProductInlineLabel(cleanProductLabel(p.name));
     const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
     return {
       text: label,
