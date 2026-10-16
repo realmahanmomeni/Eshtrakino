@@ -836,7 +836,8 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await ctx.answerCallbackQuery();
     const subCategoryId = Number(ctx.match![1]);
     ctx.session.lastShopSubCategoryId = subCategoryId;
-    ctx.session.lastCategoryId = undefined;
+    const sub = await catalogService.getSubCategoryById(subCategoryId);
+    if (sub) ctx.session.lastCategoryId = sub.categoryId;
     await showSubCategoryDetail(ctx, subCategoryId);
   });
 
