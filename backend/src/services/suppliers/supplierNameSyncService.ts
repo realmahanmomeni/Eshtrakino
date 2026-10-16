@@ -1,7 +1,10 @@
 import { prisma } from "../../lib/prisma";
 import { isAutomaticHierarchyBlocked } from "../catalog/catalogHierarchyGuard";
 import { shortenSupplierProductName } from "../catalog/shortenSupplierProductName";
-import { sanitizeSupplierNameSyncProposal } from "../catalog/supplierNameSyncGuard";
+import {
+  namesAreEquivalentForSync,
+  sanitizeSupplierNameSyncProposal,
+} from "../catalog/supplierNameSyncGuard";
 import { canbosoAdapter, type CanbosoCatalogProduct } from "./adapters/CanbosoAdapter";
 import { CANBOSO_SUPPLIER_NAME, CanbosoSyncService } from "./CanbosoSyncService";
 
@@ -10,6 +13,12 @@ export type SupplierNameSyncProposal = {
   currentName: string;
   proposedName: string;
   supplierProductKey: string;
+};
+
+export type SupplierNameSyncBuildResult = {
+  proposals: SupplierNameSyncProposal[];
+  unchangedCount: number;
+  error?: string;
 };
 
 function findRemoteForMapping(
@@ -28,10 +37,7 @@ function findRemoteForMapping(
   return byKey.get(supplierProductKey);
 }
 
-export async function buildSupplierNameSyncProposals(): Promise<{
-  proposals: SupplierNameSyncProposal[];
-  error?: string;
-}> {
+export async function buildSupplierNameSyncProposals(): Promise<SupplierNameSyncBuildResult> {
   const sync = new CanbosoSyncService();
   let remoteProducts: CanbosoCatalogProduct[];
   try {
@@ -39,7 +45,11 @@ export async function buildSupplierNameSyncProposals(): Promise<{
     remoteProducts = await canbosoAdapter.getProducts();
   } catch (err) {
     console.error("[supplierNameSync] catalog fetch failed:", err);
-    return { proposals: [], error: "دریافت کاتالوگ کنبوسo ناموفق بود. API Key را بررسی کنید." };
+    return {
+      proposals: [],
+      unchangedCount: 0,
+      error: "دریافت کاتالوگ کنبوسo ناموفق بود. API Key را بررسی کنید.",
+    };
   }
 
   const supplier = await prisma.supplier.findFirst({
@@ -47,7 +57,7 @@ export async function buildSupplierNameSyncProposals(): Promise<{
     select: { id: true },
   });
   if (!supplier) {
-    return { proposals: [], error: "تامین‌کننده Canboso یافت نشد." };
+    return { proposals: [], unchangedCount: 0, error: "تامین‌کننده Canboso یافت نشد." };
   }
 
   const mappings = await prisma.supplierProductMapping.findMany({
@@ -64,6 +74,7 @@ export async function buildSupplierNameSyncProposals(): Promise<{
   });
 
   const proposals: SupplierNameSyncProposal[] = [];
+  let unchangedCount = 0;
 
   for (const m of mappings) {
     const product = m.product;
@@ -76,13 +87,20 @@ export async function buildSupplierNameSyncProposals(): Promise<{
     );
     if (!remote) continue;
 
-    const rawProposed = shortenSupplierProductName(remote.name, { brandName: remote.brandName });
+    const rawProposed = shortenSupplierProductName(remote.name, {
+      brandName: remote.brandName,
+      keepWarranty: true,
+      durationHintFrom: product.name,
+    });
     const proposed = sanitizeSupplierNameSyncProposal({
       currentName: product.name,
       remoteName: remote.name,
       proposedName: rawProposed,
     });
-    if (!proposed || proposed === product.name) continue;
+    if (!proposed || namesAreEquivalentForSync(proposed, product.name)) {
+      unchangedCount += 1;
+      continue;
+    }
 
     const dup = await prisma.product.findFirst({
       where: {
@@ -93,7 +111,10 @@ export async function buildSupplierNameSyncProposals(): Promise<{
       },
       select: { id: true },
     });
-    if (dup) continue;
+    if (dup) {
+      unchangedCount += 1;
+      continue;
+    }
 
     proposals.push({
       productId: product.id,
@@ -104,7 +125,7 @@ export async function buildSupplierNameSyncProposals(): Promise<{
   }
 
   proposals.sort((a, b) => a.productId - b.productId);
-  return { proposals };
+  return { proposals, unchangedCount };
 }
 
 export async function applySupplierNameSyncProposals(
@@ -118,16 +139,6 @@ export async function applySupplierNameSyncProposals(
     });
     if (!product || isAutomaticHierarchyBlocked(product)) continue;
     if (product.name === p.proposedName) continue;
-
-    const dup = await prisma.product.findFirst({
-      where: {
-        id: { not: product.id },
-        subCategoryId: product.subCategoryId,
-        isActive: true,
-        name: p.proposedName,
-      },
-    });
-    if (dup) continue;
 
     await prisma.product.update({
       where: { id: p.productId },

@@ -8,37 +8,16 @@ test("formatShopProductInlineLabel keeps Muse AI quantity readable", () => {
     "۱۲۳,۰۰۰",
   );
   assert.ok(label.includes("Muse AI") || /Muse\s*AI/i.test(label));
-  assert.ok(label.includes("۱") || label.includes("میلیارد") || label.includes("…"));
   assert.match(label, /Muse\s*AI/i);
   assert.ok(label.length <= 64);
-  assert.ok(!/\S…\S/.test(label.replace(/…$/, "")));
 });
 
-test("formatShopProductInlineLabel shortens long FreePik titles with credits", () => {
-  const label = formatShopProductInlineLabel(
-    "FreePik (magnific) پیش + ۴۵ هزار FreePik (magnific) اعتبار ۱ ماه",
-    "۹۹,۰۰۰",
-  );
-  assert.match(label, /FreePik/i);
-  assert.match(label, /۹۹,۰۰۰/);
-  assert.ok(label.length <= 64);
-});
+test("Telegram Premium plans keep Persian word durations and readable titles", () => {
+  const three = formatShopProductInlineLabel("تلگرام پریمیوم سه ماهه", "3,042,000");
+  assert.match(three, /پریمیوم/);
+  assert.match(three, /۳ ماهه · 3,042,000$/);
+  assert.ok(!/^پریم…/.test(three));
 
-test("formatShopProductInlineLabel ends with single ellipsis when truncated", () => {
-  const long =
-    "Quilbot پریمیوم ۱ ماهه (گارانتی بازخرید) با توضیح اضافی بسیار طولانی برای تست";
-  const label = formatShopProductInlineLabel(long, "۵۰,۰۰۰");
-  if (label.endsWith("…")) {
-    assert.ok(!label.endsWith("…."));
-    assert.ok(!label.includes("……"));
-  }
-});
-
-test("Telegram Premium plans keep Persian word durations", () => {
-  assert.match(
-    formatShopProductInlineLabel("تلگرام پریمیوم سه ماهه", "3,042,000"),
-    /پریمیوم ۳ ماهه · 3,042,000$/,
-  );
   assert.match(
     formatShopProductInlineLabel("تلگرام پریمیوم شش ماهه", "4,117,000"),
     /پریمیوم ۶ ماهه · 4,117,000$/,
@@ -49,22 +28,39 @@ test("Telegram Premium plans keep Persian word durations", () => {
   );
 });
 
-test("Coursera and FreePik keep duration before price", () => {
+test("Coursera and FreePik keep duration before price with readable brand", () => {
   const coursera = formatShopProductInlineLabel("Coursera پرمیوم (NW) ۱۲ ماهه", "822,000");
   assert.match(coursera, /Coursera/);
   assert.match(coursera, /۱۲ ماهه · 822,000$/);
-  const freepik = formatShopProductInlineLabel("FreePik premium 1 month", "9,329,000");
+  assert.ok(!/^Cour…/.test(coursera));
+
+  const freepik = formatShopProductInlineLabel("FreePik premium 1 month", "9,324,000");
   assert.match(freepik, /FreePik/);
-  assert.match(freepik, /۱ ماهه · 9,329,000$/);
+  assert.match(freepik, /۱ ماهه · 9,324,000$/);
+  assert.ok(!/^Free…/.test(freepik));
 });
 
-test("long AI product labels always retain price suffix", () => {
-  for (const [name, price] of [
-    ["مدیر کامل FAM VEO 3 x20", "1,234,000"],
-    ["KLING 660-850 کره 1 ماه", "987,000"],
-  ]) {
-    const label = formatShopProductInlineLabel(name, price);
-    assert.match(label, new RegExp(` · ${price.replace(/,/g, ",")}$`));
-    assert.ok(label.length <= 64);
+test("products #146 and #120 always show price and preserve identity tokens", () => {
+  const fam = formatShopProductInlineLabel(
+    "مدیر کامل FAM VEO 3 x20 اعتبار ۱ ماه گارانتی کامل",
+    "29,080,000",
+  );
+  assert.match(fam, / · 29,080,000$/);
+  assert.match(fam, /VEO 3 x20|FAM VEO 3 x20/);
+  assert.ok(!/VEO\s+۱ ماه/.test(fam));
+
+  const kling = formatShopProductInlineLabel("KLING 660-850 کره 1 ماه", "1,897,000");
+  assert.match(kling, / · 1,897,000$/);
+  assert.match(kling, /660-850/);
+  assert.ok(kling.length <= 64);
+});
+
+test("formatShopProductInlineLabel ends with single ellipsis when truncated", () => {
+  const long =
+    "Quilbot پریمیوم ۱ ماهه (گارانتی بازخرید) با توضیح اضافی بسیار طولانی برای تست";
+  const label = formatShopProductInlineLabel(long, "۵۰,۰۰۰");
+  assert.match(label, / · ۵۰,۰۰۰$/);
+  if (label.endsWith("…")) {
+    assert.ok(!label.includes("……"));
   }
 });

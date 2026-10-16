@@ -27,6 +27,7 @@ import {
 import { emojiForLabel } from "../keyboards/grid";
 import { hasAnyAdminAccess } from "../admin/rbac";
 import { resolveShopShowOutOfStock } from "./shopBrowse";
+import { formatToman } from "../../lib/money";
 
 export function sanitizeCustomerCatalogText(text: string): string {
   return text
@@ -145,8 +146,23 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
     });
   }
 
+  const standaloneWithPrices = await Promise.all(
+    standaloneProducts.map(async (p) => {
+      const effectivePrice = await catalogService.getEffectivePrice(p);
+      return {
+        product: p,
+        formattedPrice: formatToman(effectivePrice),
+      };
+    }),
+  );
+  const priceById = new Map(
+    standaloneWithPrices.map((row) => [row.product.id, row.formattedPrice]),
+  );
   const standaloneUi = filterAvailabilityRowsForShop(
-    await mapProductsAvailability(standaloneProducts),
+    await mapProductsAvailability(
+      standaloneWithPrices.map((r) => r.product),
+      priceById,
+    ),
     showOos,
   );
 
