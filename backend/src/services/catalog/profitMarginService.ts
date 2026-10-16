@@ -120,31 +120,40 @@ export async function fetchLiveSupplierStock(productId: number): Promise<number 
     return null;
   }
 
-  const apiKeyRow = await prisma.supplierApiKey.findFirst({
-    where: {
-      supplierId: mapping.supplierId,
-      isActive: true,
-      isValid: true,
-    },
-    orderBy: { lastValidatedAt: "desc" },
-  });
+  const {
+    getCanbosoBulkCatalogForCheckout,
+    findRemoteInBulkCatalog,
+    getCanbosoBulkCatalog,
+  } = await import("../suppliers/canboso/canbosoBulkCatalog.js");
 
-  const apiKey = apiKeyRow
-    ? SupplierManager.decryptKey(apiKeyRow.encryptedKey)
-    : canbosoAdapter.resolveApiKey();
-
-  const details = await canbosoAdapter.getProductDetails(
-    apiKey,
+  const snap = await getCanbosoBulkCatalogForCheckout("checkout-stock");
+  let remote = findRemoteInBulkCatalog(
+    snap.indexes,
     mapping.supplierProductKey,
+    mapping.product.name,
   );
-  if (!details?.variants?.length) return null;
+  if (!remote && mapping.supplierVariantKey) {
+    remote = snap.indexes.byId.get(mapping.supplierVariantKey);
+  }
+  if (!remote) {
+    const fresh = await getCanbosoBulkCatalog({
+      maxAgeMs: 0,
+      reason: "checkout-stock-fresh",
+    });
+    remote =
+      findRemoteInBulkCatalog(
+        fresh.indexes,
+        mapping.supplierProductKey,
+        mapping.product.name,
+      ) ??
+      (mapping.supplierVariantKey
+        ? fresh.indexes.byId.get(mapping.supplierVariantKey)
+        : undefined);
+  }
 
-  const variant = mapping.supplierVariantKey
-    ? details.variants.find((v) => v.variantKey === mapping.supplierVariantKey)
-    : details.variants[0];
-
-  if (!variant) return null;
-  return Math.max(0, Math.round(variant.stock ?? 0));
+  if (!remote) return null;
+  if (!remote.isAvailable || remote.stock <= 0) return 0;
+  return Math.max(0, Math.round(remote.stock));
 }
 
 export async function fetchLiveSupplierCostUsd(productId: number): Promise<number | null> {

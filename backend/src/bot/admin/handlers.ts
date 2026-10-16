@@ -17,6 +17,7 @@ import {
   adminForceJoinKeyboard,
   adminDeleteCategoriesKeyboard,
   adminHomeKeyboard,
+  adminHomeKeyboardAsync,
   adminPaymentListKeyboard,
   adminPaymentsKeyboard,
   adminProductPickKeyboard,
@@ -230,7 +231,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
         "",
         "از منوی زیر بخش مورد نظر را انتخاب کنید:",
       ].join("\n"),
-      { parse_mode: "Markdown", reply_markup: adminHomeKeyboard() },
+      { parse_mode: "Markdown", reply_markup: await adminHomeKeyboardAsync() },
     );
   });
 
@@ -291,7 +292,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
         "",
         "از منوی زیر بخش مورد نظر را انتخاب کنید:",
       ].join("\n"),
-      adminHomeKeyboard(),
+      await adminHomeKeyboardAsync(),
     );
   });
 

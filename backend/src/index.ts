@@ -26,6 +26,7 @@ import {
 } from "./services/settings/SettingsService";
 import { lazyCacheService } from "./services/catalog/LazyCacheService";
 import { canbosoSyncService, setCanbosoSyncNotifyApi } from "./services/suppliers/CanbosoSyncService";
+import { hydrateCanbosoCooldownFromSettings } from "./services/suppliers/canboso/canbosoCooldownState";
 
 async function runAutoBackupCheck(bot: Bot<BotContext>): Promise<void> {
   const hours = await settingsService.getNumberSetting(AUTO_BACKUP_HOURS_KEY, 0);
@@ -77,6 +78,10 @@ async function main(): Promise<void> {
 
   await prisma.$connect();
   console.log("Connected to PostgreSQL via Prisma");
+
+  await hydrateCanbosoCooldownFromSettings().catch((err) => {
+    console.warn("[Canboso] Cooldown hydrate skipped:", err);
+  });
 
   // Ensure initial catalog integrity (Inspect-Before-Create)
   await bootstrapCatalog();

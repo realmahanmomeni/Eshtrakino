@@ -16,6 +16,15 @@ import {
   SupplierRateLimitError,
   SupplierUnknownError,
 } from "../SupplierAdapter";
+import { acquireCanbosoReadSlot } from "../canboso/canbosoReadLimiter";
+import {
+  applyCanbosoAuthFailurePause,
+  applyCanbosoRateLimitCooldown,
+  getCanbosoBlockedUntilMs,
+  getCanbosoPenaltyLevel,
+  isCanbosoApiRefreshAllowed,
+} from "../canboso/canbosoCooldownState";
+import { logCanbosoHttpRequest } from "../canboso/canbosoRequestLog";
 
 export type CanbosoBalance = {
   balance: number;
@@ -70,10 +79,6 @@ const DEFAULT_BASE_URL = "https://canboso.com";
 /** Shown to callers while Canboso cooldown circuit breaker is open */
 export const CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE =
   "⚠️ سرویس در حال خنک‌سازی است. لطفاً چند لحظه دیگر تلاش کنید.";
-
-/** Escalating abuse penalty cooldown — shared across all adapter HTTP calls */
-let blockedUntilTimestamp = 0;
-let currentPenaltyLevel = 0;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -603,7 +608,7 @@ function parsePenaltyLevel(response: Response): string {
   );
 }
 
-function applyRateLimitCooldown(response: Response): void {
+async function applyRateLimitCooldown(response: Response): Promise<void> {
   const retryAfterSeconds = parseRetryAfterSeconds(response);
   const penaltyLevel = parsePenaltyLevel(response);
   const scope =
@@ -611,14 +616,22 @@ function applyRateLimitCooldown(response: Response): void {
     response.headers.get("X-RateLimit-Scope");
 
   const levelNum = parseInt(penaltyLevel, 10);
-  if (Number.isFinite(levelNum)) {
-    currentPenaltyLevel = levelNum;
-  }
-
-  blockedUntilTimestamp = Date.now() + retryAfterSeconds * 1000 + 2000;
+  await applyCanbosoRateLimitCooldown(
+    retryAfterSeconds,
+    Number.isFinite(levelNum) ? levelNum : undefined,
+  );
 
   console.error(
     `[CanbosoAdapter] Rate limit exceeded! Cooldown active for ${retryAfterSeconds}s (Level: ${penaltyLevel}${scope ? `, Scope: ${scope}` : ""}).`,
+  );
+}
+
+function isCanbosoReadEndpoint(endpoint: string, method: string): boolean {
+  if (method !== "GET" && method !== "HEAD") return false;
+  return (
+    endpoint.includes("/products") ||
+    endpoint.includes("/balance") ||
+    endpoint.includes("/orders")
   );
 }
 
@@ -631,11 +644,11 @@ export class CanbosoAdapter implements SupplierAdapter {
 
   /** Remaining cooldown ms (0 if requests may proceed). */
   getRateLimitCooldownRemainingMs(): number {
-    return Math.max(0, blockedUntilTimestamp - Date.now());
+    return Math.max(0, getCanbosoBlockedUntilMs() - Date.now());
   }
 
   getCurrentPenaltyLevel(): number {
-    return currentPenaltyLevel;
+    return getCanbosoPenaltyLevel();
   }
 
   resolveApiKey(apiKey?: string): string {
@@ -650,16 +663,23 @@ export class CanbosoAdapter implements SupplierAdapter {
     endpoint: string,
     apiKey: string,
     options: RequestInit = {},
+    meta?: { logReason?: string },
   ): Promise<Response> {
     const headers = new Headers(options.headers ?? {});
     headers.set("X-API-Key", apiKey);
     headers.set("Authorization", `Bearer ${apiKey}`);
     headers.set("Content-Type", "application/json");
     headers.set("Accept", "application/json");
+    const method = (options.method ?? "GET").toUpperCase();
 
     try {
-      if (Date.now() < blockedUntilTimestamp) {
+      if (!isCanbosoApiRefreshAllowed()) {
+        logCanbosoHttpRequest(endpoint, "skipped", meta?.logReason ?? "cooldown");
         throw new SupplierRateLimitError(CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE);
+      }
+
+      if (isCanbosoReadEndpoint(endpoint, method)) {
+        await acquireCanbosoReadSlot();
       }
 
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -667,11 +687,18 @@ export class CanbosoAdapter implements SupplierAdapter {
         headers,
       });
 
+      logCanbosoHttpRequest(
+        endpoint,
+        response.status,
+        meta?.logReason ?? method.toLowerCase(),
+      );
+
       if (response.status === 401 || response.status === 403) {
+        await applyCanbosoAuthFailurePause(`HTTP ${response.status}`);
         throw new SupplierAuthenticationError("Canboso API key rejected.");
       }
       if (response.status === 429) {
-        applyRateLimitCooldown(response);
+        await applyRateLimitCooldown(response);
         throw new SupplierRateLimitError(CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE);
       }
       if (response.status === 409) {
@@ -706,26 +733,15 @@ export class CanbosoAdapter implements SupplierAdapter {
     }
   }
 
-  async getBalance(apiKey?: string): Promise<CanbosoBalance> {
-    const key = this.resolveApiKey(apiKey);
-    const response = await this.fetchApi("/api/v2/telegram-buyer/balance", key);
-    if (!response.ok) {
-      throw new SupplierInvalidResponseError(
-        `Canboso balance failed: HTTP ${response.status}`,
-      );
-    }
-    const body: unknown = await response.json().catch(() => null);
-    const root = asRecord(body);
-    const data = asRecord(root?.data) ?? root;
-    const balance =
-      pickNumber(data?.balance, data?.wallet_balance, data?.amount, root?.balance) ?? 0;
-    const currency = pickString(data?.currency, root?.currency);
-    return { balance, currency, raw: body };
-  }
-
-  async getProducts(apiKey?: string): Promise<CanbosoCatalogProduct[]> {
-    const key = this.resolveApiKey(apiKey);
-    const response = await this.fetchApi("/api/v2/telegram-buyer/products", key);
+  /** Low-level GET /products (single HTTP). Prefer getCanbosoBulkCatalog for shared cache. */
+  async fetchProductsFromApi(logReason = "products"): Promise<CanbosoCatalogProduct[]> {
+    const key = this.resolveApiKey();
+    const response = await this.fetchApi(
+      "/api/v2/telegram-buyer/products",
+      key,
+      {},
+      { logReason },
+    );
     if (!response.ok) {
       throw new SupplierInvalidResponseError(
         `Canboso products failed: HTTP ${response.status}`,
@@ -741,6 +757,34 @@ export class CanbosoAdapter implements SupplierAdapter {
     }
 
     return mapped;
+  }
+
+  async getBalance(apiKey?: string): Promise<CanbosoBalance> {
+    const key = this.resolveApiKey(apiKey);
+    const response = await this.fetchApi(
+      "/api/v2/telegram-buyer/balance",
+      key,
+      {},
+      { logReason: "balance" },
+    );
+    if (!response.ok) {
+      throw new SupplierInvalidResponseError(
+        `Canboso balance failed: HTTP ${response.status}`,
+      );
+    }
+    const body: unknown = await response.json().catch(() => null);
+    const root = asRecord(body);
+    const data = asRecord(root?.data) ?? root;
+    const balance =
+      pickNumber(data?.balance, data?.wallet_balance, data?.amount, root?.balance) ?? 0;
+    const currency = pickString(data?.currency, root?.currency);
+    return { balance, currency, raw: body };
+  }
+
+  async getProducts(_apiKey?: string): Promise<CanbosoCatalogProduct[]> {
+    const { getCanbosoBulkCatalog } = await import("../canboso/canbosoBulkCatalog.js");
+    const snap = await getCanbosoBulkCatalog({ reason: "adapter.getProducts" });
+    return snap.remoteProducts;
   }
 
   async purchaseProduct(
@@ -765,11 +809,16 @@ export class CanbosoAdapter implements SupplierAdapter {
     const timeout = setTimeout(() => controller.abort(), 45_000);
 
     try {
-      const response = await this.fetchApi("/api/v2/telegram-buyer/purchase", key, {
-        method: "POST",
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      const response = await this.fetchApi(
+        "/api/v2/telegram-buyer/purchase",
+        key,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        },
+        { logReason: "purchase" },
+      );
 
       const rawText = await response.text().catch(() => "");
       let body: unknown = null;
@@ -846,7 +895,9 @@ export class CanbosoAdapter implements SupplierAdapter {
   }
 
   async getProductDetails(apiKey: string, productKey: string): Promise<SupplierProduct | null> {
-    const products = await this.getProducts(apiKey);
+    const { getCanbosoBulkCatalogForCheckout } = await import("../canboso/canbosoBulkCatalog.js");
+    const snap = await getCanbosoBulkCatalogForCheckout("getProductDetails");
+    const products = snap.remoteProducts;
     const matches = products.filter(
       (p) =>
         p.productId === productKey ||

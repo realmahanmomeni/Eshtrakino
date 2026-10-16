@@ -44,9 +44,16 @@ export function withOutOfStockPrefix(label: string, outOfStock: boolean): string
 export async function isProductOutOfStock(product: Product): Promise<boolean> {
   if (!product.isActive) return true;
 
-  if (product.deliveryType === DeliveryType.READY) {
+  if (
+    product.deliveryType === DeliveryType.READY ||
+    product.deliveryType === DeliveryType.USER_CHOICE
+  ) {
     const available = await inventoryService.countAvailable(product.id);
     return available <= 0;
+  }
+
+  if (product.deliveryType === DeliveryType.SUPPLIER_AUTO) {
+    return false;
   }
 
   return false;

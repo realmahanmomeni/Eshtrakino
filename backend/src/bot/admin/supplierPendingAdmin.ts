@@ -27,10 +27,11 @@ import {
 } from "./supplierPendingAdminUi";
 import { registerPendingImportPlacementConversations } from "./pendingImportPlacementConversation";
 import { suggestPendingImportSubCategoryName } from "../../services/suppliers/pendingImportBrandName";
+import { registerSupplierNameSyncAdmin } from "./supplierNameSyncAdmin";
 
 type ListFilter = "PENDING" | "REJECTED";
 
-async function guardCatalogAdmin(ctx: BotContext): Promise<boolean> {
+export async function guardCatalogAdmin(ctx: BotContext): Promise<boolean> {
   if (
     !ctx.from ||
     (!(await hasAnyAdminAccess(ctx.from.id)) &&
@@ -310,6 +311,25 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
     }
   });
 
+  admin.callbackQuery(/^adm:sup:pend:reopen:(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    const pendingId = Number(ctx.match![1]);
+    const result = await supplierPendingImportService.reopenPending(pendingId);
+    await ctx.answerCallbackQuery({ text: result.message, show_alert: !result.ok });
+    if (result.ok) {
+      await presentPendingList(ctx, "PENDING", 0);
+      return;
+    }
+    const row = await prisma.supplierPendingImport.findUnique({ where: { id: pendingId } });
+    if (row) {
+      const summary = await buildPendingImportSummaryHtml(row);
+      await safeEdit(ctx, summary, {
+        parse_mode: "HTML",
+        reply_markup: pendingImportActionKeyboard(row.id, row.status),
+      });
+    }
+  });
+
   admin.callbackQuery(/^adm:sup:pend:margin:(\d+)$/, async (ctx) => {
     if (!(await guardCatalogAdmin(ctx))) return;
     await ctx.answerCallbackQuery();
@@ -483,5 +503,6 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
     }
   });
 
+  registerSupplierNameSyncAdmin(admin);
   bot.use(admin);
 }

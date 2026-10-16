@@ -7,7 +7,7 @@ import {
 import type { Api } from "grammy";
 import { prisma } from "../../lib/prisma";
 import { getCatalogAdminTelegramIds } from "../../lib/catalogAdminNotify";
-import { polishCustomerProductTitle } from "../catalog/productTitlePolish";
+import { shortenSupplierProductName } from "../catalog/shortenSupplierProductName";
 import { convertUsdToToman } from "../exchangeRateService";
 import { exchangeRateService } from "../exchangeRateService";
 import {
@@ -88,7 +88,12 @@ export function pendingImportActionKeyboard(
     kb.text("✏️ ویرایش قیمت", `adm:sup:pend:margin:${pendingId}`).row();
     kb.text("❌ نادیده گرفتن", `adm:sup:pend:reject:${pendingId}`).row();
   }
-  kb.text("🔙 بازگشت", `adm:sup:pend:list:PENDING:0`).row();
+  if (status === SupplierPendingImportStatus.REJECTED) {
+    kb.text("↩️ بازگرداندن به انتظار", `adm:sup:pend:reopen:${pendingId}`).row();
+  }
+  const listFilter =
+    status === SupplierPendingImportStatus.REJECTED ? "REJECTED" : "PENDING";
+  kb.text("🔙 بازگشت", `adm:sup:pend:list:${listFilter}:0`).row();
   return kb;
 }
 
@@ -126,11 +131,27 @@ export async function buildPendingPlacementConfirmHtml(
     ? `${escapeHtml(category.name)} › ${escapeHtml(subName)}`
     : escapeHtml(category.name);
 
+  const brandHint =
+    row.brandName?.trim() ||
+    row.displayName.split(/[|—–\-]/)[0]?.trim() ||
+    "";
+  const brandNorm = brandHint.replace(/\s+/g, " ").toLowerCase();
+  const subNorm = (subName ?? "").replace(/\s+/g, " ").toLowerCase();
+  const brandMismatch =
+    brandNorm.length >= 3 && subName != null && !subNorm.includes(brandNorm.slice(0, Math.min(brandNorm.length, 8)));
+
   return [
     "📋 <b>تایید افزودن به فروشگاه</b>",
     "",
     `📦 محصول: <b>${safeName}</b>`,
-    `📂 محل قرارگیری: <b>${path}</b>`,
+    `📂 محل قرارگیری:`,
+    `<b>${path}</b>`,
+    ...(brandMismatch
+      ? [
+          "",
+          "⚠️ <b>هشدار:</b> نام زیردسته با برند محصول هم‌خوانی ندارد. قبل از تایید، محل قرارگیری را دوباره بررسی کنید.",
+        ]
+      : []),
     `💵 قیمت خرید: <b>$${row.supplierCostUsd.toFixed(4)}</b>`,
     `📈 درصد سود: <b>${margin}%</b>`,
     `🏷 قیمت فروش: <b>$${sellingUsd.toFixed(4)}</b> — <b>${Math.round(sellingToman).toLocaleString("fa-IR")}</b> تومان`,
@@ -181,7 +202,9 @@ export class SupplierPendingImportService {
       }
 
       const supplierCostUsd = supplierCostUsdFromRemote(remote, usdRate);
-      const displayName = polishCustomerProductTitle(remote.brandName ?? remote.name);
+      const displayName = shortenSupplierProductName(remote.name, {
+        brandName: remote.brandName,
+      });
       const description = remote.description?.trim()
         ? sanitizeCustomerCatalogText(remote.description).trim()
         : "تحویل دیجیتال از طریق اشتراکینو";
@@ -218,7 +241,9 @@ export class SupplierPendingImportService {
     usdRate: number,
   ): Promise<void> {
     const supplierCostUsd = supplierCostUsdFromRemote(remote, usdRate);
-    const displayName = polishCustomerProductTitle(remote.brandName ?? remote.name);
+    const displayName = shortenSupplierProductName(remote.name, {
+      brandName: remote.brandName,
+    });
     await prisma.supplierPendingImport.update({
       where: { id: pendingId },
       data: {
@@ -333,6 +358,23 @@ export class SupplierPendingImportService {
     });
   }
 
+  async reopenPending(
+    pendingId: number,
+  ): Promise<{ ok: boolean; message: string }> {
+    const updated = await prisma.supplierPendingImport.updateMany({
+      where: { id: pendingId, status: SupplierPendingImportStatus.REJECTED },
+      data: {
+        status: SupplierPendingImportStatus.PENDING,
+        reviewedAt: null,
+        reviewedByTelegramId: null,
+      },
+    });
+    if (updated.count === 0) {
+      return { ok: false, message: "فقط درخواست‌های رد‌شده قابل بازگردانی هستند." };
+    }
+    return { ok: true, message: "درخواست دوباره در صف انتظار قرار گرفت." };
+  }
+
   async rejectPending(
     pendingId: number,
     reviewerTelegramId: bigint,
@@ -400,11 +442,13 @@ export class SupplierPendingImportService {
       }
 
       const fresh = await tx.supplierPendingImport.findUnique({ where: { id: pendingId } });
-      const displayName = formatPendingDisplayName(fresh?.displayName ?? pending.displayName);
+      const displayName = shortenSupplierProductName(fresh?.displayName ?? pending.displayName, {
+        brandName: fresh?.brandName ?? pending.brandName,
+      });
 
       const product = await tx.product.create({
         data: {
-          name: displayName,
+          name: formatPendingDisplayName(displayName),
           price: convertUsdToToman(pending.supplierCostUsd, usdRate),
           currency: "USD",
           usdPrice: pending.supplierCostUsd,

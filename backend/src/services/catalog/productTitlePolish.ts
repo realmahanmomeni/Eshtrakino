@@ -42,7 +42,7 @@ const EXACT_TITLE_MAP: Array<[RegExp, string]> = [
   [/freepik\s*1m/i, "فری‌پیک ۱ ماهه"],
 ];
 
-function stripTitleGarbage(name: string): string {
+export function stripTitleGarbage(name: string): string {
   return name
     .replace(/\(\s*گارانتی\s*کامل\s*\)/gi, "")
     .replace(/\(\s*\d+\s*روز\s*گارانتی\s*\)/gi, "")
@@ -58,7 +58,7 @@ function stripTitleGarbage(name: string): string {
     .trim();
 }
 
-function normalizeDurationPhrases(name: string): string {
+export function normalizeDurationPhrases(name: string): string {
   let n = name;
   n = n.replace(/\b1\s*ماهه?\b/gi, "۱ ماهه");
   n = n.replace(/\b3\s*ماه?\b/gi, "۳ ماهه");

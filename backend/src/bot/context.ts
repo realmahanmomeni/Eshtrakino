@@ -37,6 +37,12 @@ export interface SessionData {
   pendingInvoiceId?: number;
   /** Opens price edit sub-flow immediately inside editProduct conversation */
   adminOpenProductPriceEdit?: boolean;
+  /** Product ids from last Canboso name-sync preview (adm:sup:syncnames) */
+  supplierNameSyncIds?: number[];
+  /** Admin-only shop browse: when true, out-of-stock products appear in lists */
+  shopShowOutOfStock?: boolean;
+  /** Last shop subcategory viewed (for admin OOS toggle re-render) */
+  lastShopSubCategoryId?: number;
 };
 
 /** Explicit defaults for `session({ initial })` — keeps keys defined. */
@@ -63,6 +69,9 @@ export function createInitialSession(): SessionData {
     adminReplyTicketId: undefined,
     discountInvoiceId: undefined,
     pendingInvoiceId: undefined,
+    supplierNameSyncIds: undefined,
+    shopShowOutOfStock: undefined,
+    lastShopSubCategoryId: undefined,
   };
 }
 

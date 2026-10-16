@@ -45,6 +45,7 @@ const envSchema = z.object({
     .optional()
     .default("tgb_c72724412e4364cf9e1934c1c4d5a53333b93dcf53b1d6c1"),
   CANBOSO_BASE_URL: z.string().optional().default("https://canboso.com"),
+  CANBOSO_CATALOG_TTL_MS: z.coerce.number().int().positive().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

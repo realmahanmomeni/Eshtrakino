@@ -95,10 +95,16 @@ export const HARD_REASSIGN_RULES: HardReassignRule[] = [
     cleanName: "الون‌لبز کریتور ۳ ماهه",
   },
   {
-    pattern: /لینکدین|linkedin|sales\s*navigator|سیلز\s*نا/i,
+    pattern: /sales\s*navigator|سیلز\s*نا/i,
     taxonomyKey: "education",
     subCategoryName: "LinkedIn | لینکدین",
     cleanName: "سیلز ناویگیتور ۱ ماهه",
+  },
+  {
+    pattern: /لینکدین|linkedin/i,
+    taxonomyKey: "education",
+    subCategoryName: "LinkedIn | لینکدین",
+    cleanName: "",
   },
   {
     pattern: /ایمیل\s*اوت.?لوک|outlook/i,
@@ -161,13 +167,16 @@ export async function applyHardReassignRule(productId: number, rule: HardReassig
   const taxonomy = taxonomyByKey(rule.taxonomyKey);
   const category = await ensureTaxonomyCategory(taxonomy);
   const sub = await ensureSubCategoryForBrand(category.id, rule.subCategoryName);
+  const data: { categoryId: number; subCategoryId: number; name?: string } = {
+    categoryId: category.id,
+    subCategoryId: sub.id,
+  };
+  if (rule.cleanName.trim()) {
+    data.name = rule.cleanName;
+  }
   await prisma.product.update({
     where: { id: productId },
-    data: {
-      categoryId: category.id,
-      subCategoryId: sub.id,
-      name: rule.cleanName,
-    },
+    data,
   });
 }
 
@@ -335,19 +344,54 @@ function normalizeName(name: string): string {
   return name.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+async function activeDuplicateNameExists(
+  productId: number,
+  subCategoryId: number | null,
+  name: string,
+): Promise<boolean> {
+  if (subCategoryId == null) return false;
+  const dup = await prisma.product.findFirst({
+    where: {
+      id: { not: productId },
+      subCategoryId,
+      isActive: true,
+      name,
+    },
+    select: { id: true },
+  });
+  return dup != null;
+}
+
 export async function polishAllCatalogProductTitles(): Promise<number> {
   const products = await prisma.product.findMany({
-    select: { id: true, name: true, hierarchyLocked: true },
+    select: {
+      id: true,
+      name: true,
+      hierarchyLocked: true,
+      subCategoryId: true,
+      isActive: true,
+      subCategory: { select: { isAdminManaged: true } },
+      category: { select: { isAdminManaged: true } },
+      supplierProductMapping: { select: { productId: true } },
+    },
   });
   let n = 0;
   for (const p of products) {
-    if (p.hierarchyLocked) continue;
-    const hard = findHardReassignRule(p.name);
-    const polished = hard?.cleanName ?? polishCustomerProductTitle(p.name);
-    if (polished !== p.name) {
-      await prisma.product.update({ where: { id: p.id }, data: { name: polished } });
-      n += 1;
+    if (
+      p.hierarchyLocked ||
+      p.subCategory?.isAdminManaged ||
+      p.category?.isAdminManaged
+    ) {
+      continue;
     }
+    if (p.supplierProductMapping) continue;
+    const polished = polishCustomerProductTitle(p.name);
+    if (polished === p.name) continue;
+    if (p.isActive && (await activeDuplicateNameExists(p.id, p.subCategoryId, polished))) {
+      continue;
+    }
+    await prisma.product.update({ where: { id: p.id }, data: { name: polished } });
+    n += 1;
   }
   return n;
 }

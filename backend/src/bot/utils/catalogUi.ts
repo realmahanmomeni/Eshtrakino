@@ -13,11 +13,18 @@ import { isStarsCatalog, starsPricingService } from "../../services/catalog/star
 import { exchangeRateService } from "../../services/exchangeRateService";
 import {
   categoryFullyOutOfStock,
-  isProductOutOfStock,
   subCategoryFullyOutOfStock,
 } from "../../services/catalog/catalogAvailability";
+import {
+  categoryHasShopAvailableProduct,
+  ensureShopCatalogFresh,
+  filterAvailabilityRowsForShop,
+  mapProductsAvailability,
+  subCategoryHasShopAvailableProduct,
+} from "../../services/catalog/shopAvailability";
 import { emojiForLabel } from "../keyboards/grid";
-import { lazyCacheService } from "../../services/catalog/LazyCacheService";
+import { hasAnyAdminAccess } from "../admin/rbac";
+import { resolveShopShowOutOfStock } from "./shopBrowse";
 
 export function sanitizeCustomerCatalogText(text: string): string {
   return text
@@ -28,11 +35,17 @@ export function sanitizeCustomerCatalogText(text: string): string {
 
 export async function buildShopCategoryOutOfStockMap(
   categories: Array<{ id: number }>,
+  options?: { hideFullyUnavailable?: boolean },
 ): Promise<Map<number, boolean>> {
   const map = new Map<number, boolean>();
   await Promise.all(
     categories.map(async (c) => {
-      map.set(c.id, await categoryFullyOutOfStock(c.id));
+      if (options?.hideFullyUnavailable) {
+        const hasAny = await categoryHasShopAvailableProduct(c.id);
+        map.set(c.id, !hasAny);
+      } else {
+        map.set(c.id, await categoryFullyOutOfStock(c.id));
+      }
     }),
   );
   return map;
@@ -42,15 +55,32 @@ export async function presentShopCategories(
   ctx: BotContext,
   layoutColumns: 1 | 2 = 2,
 ): Promise<void> {
-  lazyCacheService.maybeRefreshOnBrowse();
-  const categories = await catalogService.listShopCategories();
-  const oosMap = await buildShopCategoryOutOfStockMap(categories);
+  await ensureShopCatalogFresh();
+  const showOos = await resolveShopShowOutOfStock(ctx);
+  let categories = await catalogService.listShopCategories();
+
+  if (!showOos) {
+    const visible = [];
+    for (const c of categories) {
+      if (await categoryHasShopAvailableProduct(c.id)) visible.push(c);
+    }
+    categories = visible;
+  }
+
+  const oosMap = await buildShopCategoryOutOfStockMap(categories, {
+    hideFullyUnavailable: !showOos,
+  });
   const kb = shopRootMenuKeyboard(categories, layoutColumns, { outOfStockByCategoryId: oosMap });
+
+  const emptyHint =
+    categories.length === 0
+      ? "\n\nفعلاً محصول قابل خریدی در فروشگاه موجود نیست. کمی بعد دوباره سر بزنید یا «بروزرسانی» را بزنید."
+      : "";
 
   await safeEditMedia(
     ctx,
     BannerAssets.shop,
-    "🛍 *فروشگاه اشتراکینو*\n\nدسته مورد نظر را انتخاب کنید:",
+    `🛍 *فروشگاه اشتراکینو*\n\nدسته مورد نظر را انتخاب کنید:${emptyHint}`,
     kb,
     "photo",
     { parse_mode: "Markdown" },
@@ -58,13 +88,30 @@ export async function presentShopCategories(
 }
 
 export async function presentCategoryView(ctx: BotContext, categoryId: number): Promise<void> {
-  lazyCacheService.maybeRefreshOnBrowse();
+  await ensureShopCatalogFresh();
+  const showOos = await resolveShopShowOutOfStock(ctx);
+  const isAdmin = ctx.from ? await hasAnyAdminAccess(ctx.from.id) : false;
+
   const category = await catalogService.getCategory(categoryId);
   if (!category) {
     await safeEditMedia(
       ctx,
       BannerAssets.shop,
       "⚠️ *دسته بندی نامعتبر*",
+      categoriesKeyboard(await catalogService.listShopCategories(), 2),
+    );
+    return;
+  }
+
+  if (!showOos && !(await categoryHasShopAvailableProduct(categoryId))) {
+    await safeEditMedia(
+      ctx,
+      BannerAssets.category,
+      [
+        `${emojiForLabel(category.name)} *${sanitizeCustomerCatalogText(category.name)}*`,
+        "",
+        "فعلاً محصول قابل خریدی در این دسته موجود نیست.",
+      ].join("\n"),
       categoriesKeyboard(await catalogService.listShopCategories(), 2),
     );
     return;
@@ -77,20 +124,21 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
   const user = await invoiceService.ensureUser(BigInt(ctx.from!.id));
   const pending = await invoiceService.getOpenInvoice(user.id);
 
-  const subCategoriesUi = await Promise.all(
-    subCategories.map(async (s) => ({
+  const subCategoriesUi: Array<{ id: number; name: string; outOfStock: boolean }> = [];
+  for (const s of subCategories) {
+    const fullyOos = await subCategoryFullyOutOfStock(s.id);
+    const hasAvailable = await subCategoryHasShopAvailableProduct(s.id);
+    if (!showOos && !hasAvailable) continue;
+    subCategoriesUi.push({
       id: s.id,
       name: s.name,
-      outOfStock: await subCategoryFullyOutOfStock(s.id),
-    })),
-  );
+      outOfStock: fullyOos,
+    });
+  }
 
-  const standaloneUi = await Promise.all(
-    standaloneProducts.map(async (p) => ({
-      id: p.id,
-      name: p.name,
-      outOfStock: await isProductOutOfStock(p),
-    })),
+  const standaloneUi = filterAvailabilityRowsForShop(
+    await mapProductsAvailability(standaloneProducts),
+    showOos,
   );
 
   const catBanner = category.bannerUrl?.trim() || BannerAssets.category;
@@ -112,14 +160,18 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
   const shopPage = await pageContentService.getPage("shop");
   const layoutColumns = shopPage.layoutColumns === 1 ? 1 : 2;
 
+  const hasListItems = subCategoriesUi.length > 0 || standaloneUi.length > 0;
+
   const caption = [
     title,
     ...(desc ? ["", `📝 ${sanitizeCustomerCatalogText(desc)}`] : []),
     ...(starsRateLine ? ["", starsRateLine] : []),
     "",
-    subCategoriesUi.length > 0
-      ? "سرویس یا محصول مورد نظر را انتخاب کنید:"
-      : "📦 محصول مورد نظر را انتخاب کنید:",
+    hasListItems
+      ? subCategoriesUi.length > 0
+        ? "سرویس یا محصول مورد نظر را انتخاب کنید:"
+        : "📦 محصول مورد نظر را انتخاب کنید:"
+      : "فعلاً محصول قابل خریدی در این دسته موجود نیست.",
   ].join("\n");
 
   await safeEditMedia(
@@ -130,6 +182,8 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
       hasPendingInvoice: Boolean(pending),
       layoutColumns,
       categoryId,
+      adminOutOfStockToggle:
+        isAdmin ? { showing: showOos } : undefined,
     }),
     "photo",
     { parse_mode },
