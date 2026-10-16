@@ -1,23 +1,17 @@
 export type ShopRefreshRerenderTarget =
   | { kind: "category"; categoryId: number }
-  | { kind: "subcategory"; subCategoryId: number }
   | { kind: "root" };
 
-/** Which shop screen to redraw after a price/stock refresh (session + optional explicit category). */
+/**
+ * Which shop screen to redraw after refresh.
+ * - `shop:refresh` → root (CMS shop page, same as main-menu shop entry).
+ * - `cat:refresh:<id>` → that category only (from callback data, not session).
+ */
 export function pickShopRefreshRerenderTarget(
-  session: { lastCategoryId?: number; lastShopSubCategoryId?: number },
   explicitCategoryId?: number,
 ): ShopRefreshRerenderTarget {
   if (explicitCategoryId != null) {
     return { kind: "category", categoryId: explicitCategoryId };
-  }
-  const subId = session.lastShopSubCategoryId;
-  if (subId != null) {
-    return { kind: "subcategory", subCategoryId: subId };
-  }
-  const categoryId = session.lastCategoryId;
-  if (categoryId != null) {
-    return { kind: "category", categoryId };
   }
   return { kind: "root" };
 }
