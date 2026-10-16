@@ -1,6 +1,15 @@
 import { isLossyShortening } from "./shortenSupplierProductName";
+import { normalizeDurationPhrases } from "./productTitlePolish";
+import {
+  namesAreEquivalentForSync,
+  normalizeNameForSyncComparison,
+} from "./supplierNameSyncCompare";
 
 const PLAN_TIER_WORDS = ["ultra", "super", "pro", "max", "plus", "api", "magnific"] as const;
+const EMOJI_RE = /\p{Extended_Pictographic}/gu;
+const ALNUM_TOKEN_RE = /\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{2,}\b/g;
+const DURATION_SURFACE_RE =
+  /[\d۰-۹]{1,4}\s*(?:ماهه?|ساله?|روزه?)|(?:یک|دو|سه|چهار|پنج|شش|هفت|ده|یازده|دوازده)\s*(?:ماهه?|ساله?|روزه?|ماه|سال|روز)|\b\d+\s*(?:mo|month|months|day|days|yr|year|years)\b/giu;
 
 function tokenize(text: string): Set<string> {
   const normalized = text
@@ -121,6 +130,104 @@ function brandTokenMissing(sources: string[], proposed: string): boolean {
   return false;
 }
 
+function warrantySnippets(text: string): string[] {
+  const re = /\(\s*[^)]*(?:گارانتی|guarantee|warranty)[^)]*\)/gi;
+  return [...text.matchAll(re)].map((m) => m[0].trim());
+}
+
+function dropsWarrantySnippet(sources: string[], proposed: string): boolean {
+  for (const src of sources) {
+    for (const snippet of warrantySnippets(src)) {
+      const compact = snippet.replace(/\s+/g, "");
+      if (!proposed.includes(snippet) && !proposed.replace(/\s+/g, "").includes(compact)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function corruptsAlphanumericTokens(sources: string[], proposed: string): boolean {
+  const propUpper = proposed.toUpperCase();
+  for (const src of sources) {
+    for (const m of src.matchAll(ALNUM_TOKEN_RE)) {
+      const tok = m[0]!;
+      if (!propUpper.includes(tok.toUpperCase())) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function addsEmojiWhenAbsent(current: string, proposed: string): boolean {
+  return EMOJI_RE.test(proposed) && !EMOJI_RE.test(current);
+}
+
+function durationSurfaces(text: string): string[] {
+  const n = normalizeDurationPhrases(text);
+  return [...n.matchAll(DURATION_SURFACE_RE)].map((m) => m[0].replace(/\s+/g, " ").trim());
+}
+
+function durationSemanticKey(surface: string): string {
+  return normalizeDurationPhrases(surface).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function changesDurationSemantics(current: string, proposed: string): boolean {
+  const cur = durationSurfaces(current);
+  const prop = durationSurfaces(proposed);
+  if (cur.length === 0 || prop.length === 0) return false;
+  const curKey = durationSemanticKey(cur[0]!);
+  const propKey = durationSemanticKey(prop[0]!);
+  return curKey !== propKey;
+}
+
+function changesDurationSurfaceOnly(current: string, proposed: string): boolean {
+  const cur = durationSurfaces(current);
+  const prop = durationSurfaces(proposed);
+  if (cur.length === 0 || prop.length === 0) return false;
+  if (cur[0] === prop[0]) return false;
+  return durationSemanticKey(cur[0]!) === durationSemanticKey(prop[0]!);
+}
+
+function stripEmojiForCompare(text: string): string {
+  return text.replace(EMOJI_RE, "").replace(/\s+/g, " ").trim();
+}
+
+function addsUsefulBrandHint(current: string, remote: string, proposed: string): boolean {
+  const brandHint =
+    (/linkedin|لینکدین/i.test(remote) || /linkedin|لینکدین/i.test(proposed)) &&
+    !/linkedin|لینکدین/i.test(current) &&
+    /سیلز\s*نا/i.test(current);
+  return brandHint && /لینکدین|linkedin/i.test(proposed);
+}
+
+function isCosmeticOrLowValueChange(current: string, remote: string, proposed: string): boolean {
+  if (namesAreEquivalentForSync(current, proposed)) return true;
+
+  const curPlain = normalizeNameForSyncComparison(stripEmojiForCompare(current));
+  const propPlain = normalizeNameForSyncComparison(stripEmojiForCompare(proposed));
+  if (curPlain === propPlain) return true;
+
+  if (changesDurationSurfaceOnly(current, proposed) && !addsUsefulBrandHint(current, remote, proposed)) {
+    return true;
+  }
+
+  if (/چت/i.test(current) && !/چت/i.test(proposed) && /جی.?پی.?تی|gpt|chatgpt/i.test(current)) {
+    return true;
+  }
+
+  if (addsEmojiWhenAbsent(current, proposed)) return true;
+
+  const curTokens = tokenize(current);
+  const propTokens = tokenize(proposed);
+  if (propTokens.size < curTokens.size && overlapRatio(curTokens, propTokens) > 0.85) {
+    if (!addsUsefulBrandHint(current, remote, proposed)) return true;
+  }
+
+  return false;
+}
+
 /**
  * Returns a safe proposed name, or null to keep currentName (no proposal).
  */
@@ -134,13 +241,29 @@ export function sanitizeSupplierNameSyncProposal(input: {
   const proposed = input.proposedName.trim();
   const sources = [current, remote].filter(Boolean);
 
-  if (!proposed || proposed === current) return null;
+  if (!proposed || namesAreEquivalentForSync(proposed, current)) return null;
 
   if (hasUnbalancedParens(proposed) || /\…$/.test(proposed)) {
     return null;
   }
 
   if (hasMalformedDurationOrSuffix(proposed)) {
+    return null;
+  }
+
+  if (corruptsAlphanumericTokens(sources, proposed)) {
+    return null;
+  }
+
+  if (dropsWarrantySnippet(sources, proposed)) {
+    return null;
+  }
+
+  if (changesDurationSemantics(current, proposed)) {
+    return null;
+  }
+
+  if (isCosmeticOrLowValueChange(current, remote, proposed)) {
     return null;
   }
 
@@ -204,3 +327,5 @@ function hasUnbalancedParens(text: string): boolean {
   }
   return depth !== 0;
 }
+
+export { namesAreEquivalentForSync } from "./supplierNameSyncCompare";

@@ -38,7 +38,7 @@ export function registerSupplierNameSyncAdmin(admin: Composer<BotContext>): void
     if (!(await guardCatalogAdmin(ctx))) return;
     await ctx.answerCallbackQuery({ text: "در حال دریافت از کنبوسo…" });
 
-    const { proposals, error } = await buildSupplierNameSyncProposals();
+    const { proposals, unchangedCount, error } = await buildSupplierNameSyncProposals();
     if (error) {
       await safeEdit(ctx, `⚠️ ${error}`, adminSuppliersKeyboard());
       return;
@@ -49,8 +49,13 @@ export function registerSupplierNameSyncAdmin(admin: Composer<BotContext>): void
     if (proposals.length === 0) {
       await safeEdit(
         ctx,
-        "✅ همه نام‌های نگاشت‌شده با پیشنهاد کوتاه فعلی هم‌خوان هستند؛ تغییری لازم نیست.",
-        adminSuppliersKeyboard(),
+        [
+          "✅ همه نام‌های نگاشت‌شده با پیشنهاد کوتاه فعلی هم‌خوان هستند؛ تغییری لازم نیست.",
+          unchangedCount > 0 ? `\nبدون تغییر: <b>${unchangedCount}</b> مورد` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        { parse_mode: "HTML", reply_markup: adminSuppliersKeyboard() },
       );
       return;
     }
@@ -68,6 +73,7 @@ export function registerSupplierNameSyncAdmin(admin: Composer<BotContext>): void
         "🏷 <b>همگام‌سازی نام‌ها از کنبوسo</b>",
         "",
         `تعداد پیشنهاد: <b>${proposals.length}</b>`,
+        `بدون تغییر: <b>${unchangedCount}</b> مورد`,
         "",
         formatPreview(proposals),
         "",

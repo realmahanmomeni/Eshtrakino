@@ -167,23 +167,40 @@ function buildFromParts(
  */
 export function shortenSupplierProductName(
   rawName: string,
-  options?: { brandName?: string | null; maxLen?: number },
+  options?: {
+    brandName?: string | null;
+    maxLen?: number;
+    keepWarranty?: boolean;
+    durationHintFrom?: string | null;
+  },
 ): string {
   const maxLen = options?.maxLen ?? 32;
   const raw = rawName.trim();
   if (!raw) return raw;
 
   let blob = stripEmoji(stripTitleGarbage(raw));
-  blob = blob.replace(GUARANTEE_PAREN_RE, " ").replace(GUARANTEE_BRACKET_RE, " ");
+  if (!options?.keepWarranty) {
+    blob = blob.replace(GUARANTEE_PAREN_RE, " ").replace(GUARANTEE_BRACKET_RE, " ");
+  }
   blob = normalizeArabicToPersianCharsPreservingLatin(normalizeDurationPhrases(blob))
     .replace(/\s+/g, " ")
     .trim();
 
+  const durationHintSource = options?.durationHintFrom?.trim() || blob;
+  const durationFromHint = extractDurationHint(durationHintSource);
   const linkedIn = linkedInShortName(`${options?.brandName ?? ""} ${blob}`);
-  if (linkedIn) return composeShortName([linkedIn], maxLen);
+  if (linkedIn) {
+    let label = linkedIn;
+    if (durationFromHint) {
+      const dInLabel = extractDurationHint(label);
+      if (dInLabel) label = label.replace(dInLabel, durationFromHint);
+      else label = `${label} ${durationFromHint}`.trim();
+    }
+    return composeShortName([label], maxLen);
+  }
 
   const latinBrand = detectLatinBrand(blob) ?? detectLatinBrand(options?.brandName ?? "");
-  const duration = extractDurationHint(blob);
+  const duration = durationFromHint ?? extractDurationHint(blob);
   const quantity = extractQuantityHint(blob);
   const plan = extractPlanTier(blob);
 
