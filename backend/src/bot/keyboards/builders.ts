@@ -151,12 +151,17 @@ export function searchResultsKeyboard(
   _displayQuery: string,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
+  const labelById = shopProductButtonLabels(
+    products.map((p) => ({ id: p.id, name: p.name })),
+  );
   const prodButtons: KeyboardButton[] = products.map((p) => {
     const customEmojiId = getProductCustomEmojiId(p.name);
-    const namePart = truncateLabel(cleanProductLabel(p.name), 35);
+    const namePart =
+      labelById.get(p.id) ??
+      formatShopProductInlineLabel(cleanProductLabel(p.name));
     const label = withOutOfStockPrefix(namePart, p.outOfStock);
     return {
-      text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
+      text: label.length > 64 ? truncateInlineButtonLabel(label, 64) : label,
       data: Callbacks.viewProduct(p.id),
       icon_custom_emoji_id: customEmojiId,
     };
