@@ -9,6 +9,7 @@ import {
   emojiForLabel,
   type KeyboardButton,
 } from "./grid";
+import { appendProductButtonRows } from "./productButtonRows";
 import {
   BUTTON_CUSTOM_EMOJIS,
   getProductCustomEmojiId,
@@ -150,17 +151,17 @@ export function searchResultsKeyboard(
   _displayQuery: string,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const p of products) {
+  const prodButtons: KeyboardButton[] = products.map((p) => {
     const customEmojiId = getProductCustomEmojiId(p.name);
     const namePart = truncateLabel(cleanProductLabel(p.name), 35);
     const label = withOutOfStockPrefix(namePart, p.outOfStock);
-    appendFullWidthCta(
-      kb,
-      label.length > 64 ? `${label.slice(0, 61)}…` : label,
-      Callbacks.viewProduct(p.id),
-      customEmojiId,
-    );
-  }
+    return {
+      text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
+      data: Callbacks.viewProduct(p.id),
+      icon_custom_emoji_id: customEmojiId,
+    };
+  });
+  appendProductButtonRows(kb, prodButtons);
   kb
     .row()
     .text(SHOP_SEARCH_BTN, Callbacks.shopSearch)
@@ -264,7 +265,7 @@ export function categoryContentsKeyboard(
     if (options?.layoutColumns === 1) {
       appendOneColumn(kb, prodButtons);
     } else {
-      appendTwoColumn(kb, prodButtons);
+      appendProductButtonRows(kb, prodButtons);
     }
   }
 
@@ -319,14 +320,19 @@ export function servicePlansKeyboard(
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   const labelById = shopProductButtonLabels(products);
-  for (const p of products) {
+  const prodButtons: KeyboardButton[] = products.map((p) => {
     const customEmojiId = getProductCustomEmojiId(p.name);
     const namePart =
       labelById.get(p.id) ??
       formatShopProductInlineLabel(cleanProductLabel(p.name), p.formattedPrice);
     const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
-    appendFullWidthCta(kb, label, Callbacks.viewProduct(p.id), customEmojiId);
-  }
+    return {
+      text: label,
+      data: Callbacks.viewProduct(p.id),
+      icon_custom_emoji_id: customEmojiId,
+    };
+  });
+  appendProductButtonRows(kb, prodButtons);
   if (options?.adminOutOfStockToggle) {
     kb.row().text(
       options.adminOutOfStockToggle.showing
