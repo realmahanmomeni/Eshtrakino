@@ -26,6 +26,7 @@ const SEARCH_SYNONYM_GROUPS: string[][] = [
   ["surfshark", "سرف"],
   ["telegram stars", "استارز", "stars"],
   ["premium", "پریمیوم", "تلگرام پریمیوم"],
+  ["linkedin", "لینکدین", "sales navigator", "salesnavigator", "سیلز ناویگیتور", "navigator"],
 ];
 
 function fixPersianChars(input: string): string {
@@ -117,10 +118,22 @@ function toCatalogSearchResultDto(
   };
 }
 
+export type SearchCatalogOptions = {
+  limit?: number;
+  /** Include inactive rows (same pool as admin shop browse with «نمایش ناموجودها»). */
+  includeInactiveProducts?: boolean;
+};
+
+/** Shop search visibility: admins with OOS toggle see inactive/OOS catalog rows. */
+export function shouldSearchIncludeInactiveProducts(isAdmin: boolean, showOutOfStock: boolean): boolean {
+  return isAdmin && showOutOfStock;
+}
+
 export async function searchCatalogProducts(
   rawQuery: string,
-  limit = 24,
+  options?: SearchCatalogOptions,
 ): Promise<CatalogSearchResultDto[]> {
+  const limit = options?.limit ?? 24;
   const terms = expandSearchTerms(rawQuery);
   if (terms.length === 0) return [];
 
@@ -132,7 +145,10 @@ export async function searchCatalogProducts(
   ]);
 
   const rows = await prisma.product.findMany({
-    where: { isActive: true, OR: orConditions },
+    where: {
+      ...(options?.includeInactiveProducts ? {} : { isActive: true }),
+      OR: orConditions,
+    },
     include: {
       category: { select: { name: true } },
       subCategory: { select: { name: true } },

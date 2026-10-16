@@ -17,7 +17,10 @@ import {
 } from "./buttonEmojis";
 import { withOutOfStockPrefix } from "../../services/catalog/catalogAvailability";
 import { truncateInlineButtonLabel } from "../../lib/telegramLabel";
-import { formatShopProductInlineLabel } from "./shopProductButtonLabel";
+import {
+  extractShopProductDuration,
+  formatShopProductInlineLabel,
+} from "./shopProductButtonLabel";
 import { formatShopNavButtonLabel } from "./shopNavButtonLabel";
 
 /**
@@ -169,11 +172,6 @@ function truncateLabel(name: string, max = 40): string {
   return truncateInlineButtonLabel(name, max);
 }
 
-function extractDurationSuffix(name: string): string | null {
-  const m = name.match(/[\d۰-۹]{1,4}\s*(?:ماهه?|ساله?|روزه?)/);
-  return m ? m[0].replace(/\s+/g, " ").trim() : null;
-}
-
 /** Keep inline shop labels distinct within one list (append duration or price when names collide). */
 export function shopProductButtonLabels(
   products: Array<{ id: number; name: string; formattedPrice?: string }>,
@@ -191,7 +189,7 @@ export function shopProductButtonLabels(
   const labels = new Map<number, string>();
   for (const p of cleaned) {
     let displayName = p.base;
-    const duration = extractDurationSuffix(p.base);
+    const duration = extractShopProductDuration(p.base);
     const sharedPrefix =
       (counts.get(p.base) ?? 0) > 1 ||
       /^تلگرام\s+(?:پریمیوم|پریموم|پرمیوم)/i.test(p.base);
