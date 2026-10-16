@@ -17,6 +17,7 @@ import {
 } from "./buttonEmojis";
 import { withOutOfStockPrefix } from "../../services/catalog/catalogAvailability";
 import { truncateInlineButtonLabel } from "../../lib/telegramLabel";
+import { formatShopProductInlineLabel } from "./shopProductButtonLabel";
 
 /**
  * Layout order (top → bottom):
@@ -177,7 +178,6 @@ function extractDurationSuffix(name: string): string | null {
 /** Keep inline shop labels distinct within one list (append duration or price when names collide). */
 export function shopProductButtonLabels(
   products: Array<{ id: number; name: string; formattedPrice?: string }>,
-  maxCore = 35,
 ): Map<number, string> {
   const cleaned = products.map((p) => ({
     id: p.id,
@@ -191,18 +191,19 @@ export function shopProductButtonLabels(
 
   const labels = new Map<number, string>();
   for (const p of cleaned) {
-    let label = p.base;
+    let displayName = p.base;
     if ((counts.get(p.base) ?? 0) > 1) {
       const duration = extractDurationSuffix(p.base);
-      if (duration && !label.includes(duration)) {
-        label = `${label} ${duration}`;
-      } else if (p.price) {
-        label = `${label} · ${p.price}`;
-      } else {
-        label = `${label} #${p.id}`;
+      if (duration && !displayName.includes(duration)) {
+        displayName = `${displayName} ${duration}`;
+      } else if (!p.price) {
+        displayName = `${displayName} #${p.id}`;
       }
     }
-    labels.set(p.id, truncateLabel(label, maxCore));
+    labels.set(
+      p.id,
+      formatShopProductInlineLabel(displayName, p.price),
+    );
   }
   return labels;
 }
@@ -214,15 +215,20 @@ export function shopProductButtonLabels(
 function cleanProductLabel(name: string): string {
   return name
     .replace(/[🎟🎫]/g, "")
-    .replace(/\s*[-—–]\s*[\d,۰-۹٠-٩]+\s*(?:تومان|toman)?/gi, "")
-    .replace(/\s*\([\d,۰-۹٠-٩]+\s*(?:تومان|toman)?\)/gi, "")
+    .replace(/\s*[-—–]\s*[\d,۰-۹٠-٩]+\s*(?:تومان|toman)\b/gi, "")
+    .replace(/\s*\([\d,۰-۹٠-٩]+\s*(?:تومان|toman)\)/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 export function categoryContentsKeyboard(
   subCategories: Array<{ id: number; name: string; outOfStock?: boolean }>,
-  standaloneProducts: Array<{ id: number; name: string; outOfStock?: boolean }> = [],
+  standaloneProducts: Array<{
+    id: number;
+    name: string;
+    outOfStock?: boolean;
+    formattedPrice?: string;
+  }> = [],
   options?: {
     hasPendingInvoice?: boolean;
     layoutColumns?: 1 | 2;
@@ -250,10 +256,12 @@ export function categoryContentsKeyboard(
     const labelById = shopProductButtonLabels(standaloneProducts);
     const prodButtons: KeyboardButton[] = standaloneProducts.map((p) => {
       const customEmojiId = getProductCustomEmojiId(p.name);
-      const namePart = labelById.get(p.id) ?? truncateLabel(cleanProductLabel(p.name), 35);
+      const namePart =
+        labelById.get(p.id) ??
+        formatShopProductInlineLabel(cleanProductLabel(p.name), p.formattedPrice);
       const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
       return {
-        text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
+        text: label,
         data: Callbacks.viewProduct(p.id),
         icon_custom_emoji_id: customEmojiId,
       };
@@ -318,14 +326,11 @@ export function servicePlansKeyboard(
   const labelById = shopProductButtonLabels(products);
   for (const p of products) {
     const customEmojiId = getProductCustomEmojiId(p.name);
-    const namePart = labelById.get(p.id) ?? truncateLabel(cleanProductLabel(p.name), 35);
+    const namePart =
+      labelById.get(p.id) ??
+      formatShopProductInlineLabel(cleanProductLabel(p.name), p.formattedPrice);
     const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
-    appendFullWidthCta(
-      kb,
-      label.length > 64 ? `${label.slice(0, 61)}…` : label,
-      Callbacks.viewProduct(p.id),
-      customEmojiId,
-    );
+    appendFullWidthCta(kb, label, Callbacks.viewProduct(p.id), customEmojiId);
   }
   if (options?.adminOutOfStockToggle) {
     kb.row().text(

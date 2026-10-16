@@ -39,6 +39,8 @@ export interface SessionData {
   adminOpenProductPriceEdit?: boolean;
   /** Product ids from last Canboso name-sync preview (adm:sup:syncnames) */
   supplierNameSyncIds?: number[];
+  /** Where pending-import list was opened from (controls 🔙 on list). */
+  adminPendingListBack?: "home" | "suppliers";
   /** Admin-only shop browse: when true, out-of-stock products appear in lists */
   shopShowOutOfStock?: boolean;
   /** Last shop subcategory viewed (for admin OOS toggle re-render) */
@@ -70,6 +72,7 @@ export function createInitialSession(): SessionData {
     discountInvoiceId: undefined,
     pendingInvoiceId: undefined,
     supplierNameSyncIds: undefined,
+    adminPendingListBack: undefined,
     shopShowOutOfStock: undefined,
     lastShopSubCategoryId: undefined,
   };
