@@ -7,8 +7,7 @@ import {
   categoryContentsKeyboard,
   shopRootMenuKeyboard,
 } from "../keyboards/builders";
-import { BannerAssets } from "../assets/banners";
-import { safeEditMedia } from "./safeEdit";
+import { safePresentShopText } from "./safeEdit";
 import { isStarsCatalog } from "../../services/catalog/starsPricingService";
 import { resolveStarsHeaderUnitToman } from "../../services/catalog/starsBrowse";
 import {
@@ -86,13 +85,10 @@ export async function presentShopCategories(
       ? "\n\nفعلاً محصول قابل خریدی در فروشگاه موجود نیست. کمی بعد دوباره سر بزنید یا «بروزرسانی» را بزنید."
       : "";
 
-  await safeEditMedia(
+  await safePresentShopText(
     ctx,
-    BannerAssets.shop,
     `🛍 *فروشگاه اشتراکینو*\n\nدسته مورد نظر را انتخاب کنید:${emptyHint}`,
-    kb,
-    "photo",
-    { parse_mode: "Markdown" },
+    { parse_mode: "Markdown", reply_markup: kb },
   );
 }
 
@@ -103,25 +99,25 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
 
   const category = await catalogService.getCategory(categoryId);
   if (!category) {
-    await safeEditMedia(
-      ctx,
-      BannerAssets.shop,
-      "⚠️ *دسته بندی نامعتبر*",
-      categoriesKeyboard(await catalogService.listShopCategories(), 2),
-    );
+    await safePresentShopText(ctx, "⚠️ *دسته بندی نامعتبر*", {
+      parse_mode: "Markdown",
+      reply_markup: categoriesKeyboard(await catalogService.listShopCategories(), 2),
+    });
     return;
   }
 
   if (!showOos && !(await categoryHasShopAvailableProduct(categoryId))) {
-    await safeEditMedia(
+    await safePresentShopText(
       ctx,
-      BannerAssets.category,
       [
         `${emojiForLabel(category.name)} *${sanitizeCustomerCatalogText(category.name)}*`,
         "",
         "فعلاً محصول قابل خریدی در این دسته موجود نیست.",
       ].join("\n"),
-      categoriesKeyboard(await catalogService.listShopCategories(), 2),
+      {
+        parse_mode: "Markdown",
+        reply_markup: categoriesKeyboard(await catalogService.listShopCategories(), 2),
+      },
     );
     return;
   }
@@ -166,7 +162,6 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
     showOos,
   );
 
-  const catBanner = category.bannerUrl?.trim() || BannerAssets.category;
   const desc = category.description?.trim();
   const isStars = isStarsCatalog(category.name);
   let starsRateLine = "";
@@ -198,18 +193,13 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
       : "فعلاً محصول قابل خریدی در این دسته موجود نیست.",
   ].join("\n");
 
-  await safeEditMedia(
-    ctx,
-    catBanner,
-    caption,
-    categoryContentsKeyboard(subCategoriesUi, standaloneUi, {
+  await safePresentShopText(ctx, caption, {
+    parse_mode,
+    reply_markup: categoryContentsKeyboard(subCategoriesUi, standaloneUi, {
       hasPendingInvoice: Boolean(pending),
       layoutColumns,
       categoryId,
-      adminOutOfStockToggle:
-        isAdmin ? { showing: showOos } : undefined,
+      adminOutOfStockToggle: isAdmin ? { showing: showOos } : undefined,
     }),
-    "photo",
-    { parse_mode },
-  );
+  });
 }

@@ -1,5 +1,7 @@
 import { GrammyError, InlineKeyboard, type Api, type Context } from "grammy";
 
+export const TELEGRAM_SHOP_TEXT_MAX = 4096;
+
 type EditTextExtra = Parameters<Context["editMessageText"]>[1];
 
 function isEditOptions(value: unknown): value is EditTextExtra {
@@ -140,6 +142,61 @@ export async function safeEditById(
 }
 
 /** Edit media in place (photo or video), with text fallback. */
+export function clipShopMessageText(text: string, max = TELEGRAM_SHOP_TEXT_MAX): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
+export function isPhotoOrVideoMessage(ctx: Context): boolean {
+  const msg = ctx.callbackQuery?.message ?? ctx.msg;
+  if (!msg) return false;
+  if ("photo" in msg && msg.photo && msg.photo.length > 0) return true;
+  if ("video" in msg && msg.video) return true;
+  return false;
+}
+
+/**
+ * Shop/catalog screens: always plain text. When the panel is a photo (e.g. after main menu),
+ * delete it and send a new text message instead of editMessageText.
+ */
+export async function safePresentShopText(
+  ctx: Context,
+  text: string,
+  extra?: EditTextExtra | InlineKeyboard | unknown,
+): Promise<void> {
+  const normalized = normalizeExtra(extra);
+  const body = clipShopMessageText(text);
+
+  const rememberPanel = (chatId: number, messageId: number): void => {
+    const session = (ctx as { session?: { cmsPanelChatId?: number; cmsPanelMessageId?: number } })
+      .session;
+    if (session) {
+      session.cmsPanelChatId = chatId;
+      session.cmsPanelMessageId = messageId;
+    }
+  };
+
+  if (ctx.callbackQuery && isPhotoOrVideoMessage(ctx)) {
+    const msg = ctx.callbackQuery.message!;
+    const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+    await safeDeleteMessage(ctx.api, chatId, messageId);
+    const sent = await ctx.reply(body, normalized ?? { parse_mode: "Markdown" });
+    rememberPanel(sent.chat.id, sent.message_id);
+    return;
+  }
+
+  if (ctx.callbackQuery) {
+    await safeEdit(ctx, body, normalized);
+    const msg = ctx.callbackQuery.message;
+    if (msg) rememberPanel(msg.chat.id, msg.message_id);
+    return;
+  }
+
+  const sent = await ctx.reply(body, normalized ?? { parse_mode: "Markdown" });
+  rememberPanel(sent.chat.id, sent.message_id);
+}
+
 export async function safeEditMedia(
   ctx: Context,
   media: string,
