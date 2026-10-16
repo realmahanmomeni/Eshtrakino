@@ -1,11 +1,32 @@
+const TRAILING_ELLIPSIS_JUNK_RE = /[.…\u2026\s]+$/u;
+
+function isDigitChar(ch: string): boolean {
+  return /[\d۰-۹٠-٩]/.test(ch);
+}
+
+/** Prefer cutting on spaces; never leave a dangling partial number token. */
+function truncateAtWordBoundary(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const budget = max - 1;
+  const slice = text.slice(0, budget);
+  const lastSpace = slice.lastIndexOf(" ");
+  let cutEnd = lastSpace > budget * 0.4 ? lastSpace : budget;
+
+  while (cutEnd > 0 && cutEnd < text.length && isDigitChar(text[cutEnd]!)) {
+    const prevSpace = text.lastIndexOf(" ", cutEnd - 1);
+    if (prevSpace <= budget * 0.25) break;
+    cutEnd = prevSpace;
+  }
+
+  return text.slice(0, cutEnd).trimEnd().replace(TRAILING_ELLIPSIS_JUNK_RE, "");
+}
+
 /** Truncate for Telegram inline button text (max 64); prefer word boundary + ellipsis. */
 export function truncateInlineButtonLabel(text: string, max = 64): string {
   const trimmed = text.trim();
   if (trimmed.length <= max) return trimmed;
-  const slice = trimmed.slice(0, max - 1);
-  const lastSpace = slice.lastIndexOf(" ");
-  const cut = lastSpace > max * 0.4 ? slice.slice(0, lastSpace) : slice;
-  return `${cut.trim()}…`;
+  const head = truncateAtWordBoundary(trimmed, max);
+  return `${head}…`;
 }
 
 /** Isolate Latin runs for correct RTL display alongside Persian text. */

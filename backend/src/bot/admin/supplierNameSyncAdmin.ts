@@ -13,10 +13,15 @@ import {
 const PREVIEW_LIMIT = 25;
 
 function formatPreview(proposals: SupplierNameSyncProposal[]): string {
-  const lines = proposals.slice(0, PREVIEW_LIMIT).map(
-    (p, i) =>
-      `${i + 1}. <b>#${p.productId}</b>\n   ${escapeHtml(p.currentName)} → <b>${escapeHtml(p.proposedName)}</b>`,
-  );
+  const lines = proposals.slice(0, PREVIEW_LIMIT).map((p, i) => {
+    const oldName = escapeHtml(p.currentName.replace(/…+$/u, "").trim());
+    const newName = escapeHtml(p.proposedName.replace(/…+$/u, "").trim());
+    return [
+      `${i + 1}. <b>#${p.productId}</b>`,
+      `   <i>فعلی:</i> ${oldName}`,
+      `   <i>پیشنهاد:</i> <b>${newName}</b>`,
+    ].join("\n");
+  });
   const more =
     proposals.length > PREVIEW_LIMIT
       ? `\n… و ${proposals.length - PREVIEW_LIMIT} مورد دیگر`

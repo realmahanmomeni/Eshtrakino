@@ -38,7 +38,16 @@ export class CanbosoDispatchService {
   async isCanbosoMappedProduct(productId: number): Promise<boolean> {
     const mapping = await prisma.supplierProductMapping.findUnique({
       where: { productId },
-      include: { supplier: true, product: { include: { category: true, subCategory: true } } },
+      include: {
+        supplier: true,
+        product: {
+          include: {
+            category: true,
+            subCategory: true,
+            supplierProductMapping: true,
+          },
+        },
+      },
     });
     if (!mapping?.product) return false;
     if (isInternalEshtrakinoFulfillment(mapping.product)) return false;
@@ -67,7 +76,13 @@ export class CanbosoDispatchService {
       where: { id: invoiceId },
       include: {
         user: true,
-        product: { include: { category: true, subCategory: true } },
+        product: {
+          include: {
+            category: true,
+            subCategory: true,
+            supplierProductMapping: true,
+          },
+        },
       },
     });
     if (!invoice || !invoice.product) return false;

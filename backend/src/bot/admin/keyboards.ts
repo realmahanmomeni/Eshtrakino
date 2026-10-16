@@ -64,11 +64,10 @@ export const ConvCb = {
 export function adminHomeKeyboard(options?: { pendingImportCount?: number }): InlineKeyboard {
   const kb = new InlineKeyboard();
   const pendingCount = options?.pendingImportCount ?? 0;
-  const pendingLabel =
-    pendingCount > 0 ? `📥 محصولات جدید (${pendingCount})` : "📥 محصولات جدید";
+  const pendingLabel = `📥 محصولات جدید (${pendingCount})`;
 
   const actions = [
-    { text: pendingLabel, data: "adm:sup:pending" },
+    { text: pendingLabel, data: "adm:sup:pending:from:home" },
     { text: "💳 مدیریت پرداخت", data: Callbacks.adminPayments },
     { text: "📦 مدیریت کاتالوگ", data: Callbacks.adminCatalog },
     { text: "🎫 مدیریت تیکتها", data: Callbacks.adminTickets },
@@ -271,7 +270,7 @@ export function adminUsersListKeyboard(
     .row();
 
   kb.text("🔍 جستجوی کاربر", Callbacks.adminUsersSearchInit).row();
-  kb.text("بازگشت", Callbacks.adminHome);
+  kb.text("🔙 بازگشت", Callbacks.adminHome);
   return kb;
 }
 
@@ -344,7 +343,7 @@ export function adminUserSearchCancelKeyboard(
   listPage = 0,
 ): InlineKeyboard {
   return new InlineKeyboard().text(
-    "لغو و بازگشت",
+    "🔙 بازگشت",
     Callbacks.adminUsersList(listFilter, listPage),
   );
 }
@@ -354,7 +353,7 @@ export function adminUserSearchNotFoundKeyboard(
   listPage = 0,
 ): InlineKeyboard {
   return new InlineKeyboard().text(
-    "بازگشت به لیست",
+    "🔙 بازگشت",
     Callbacks.adminUsersList(listFilter, listPage),
   );
 }
@@ -368,7 +367,7 @@ export function adminUserProfileKeyboard(
     .text("✉️ ارسال پیام", Callbacks.adminUserMessage(userId))
     .text("💰 ویرایش موجودی", Callbacks.adminUserBalance(userId))
     .row()
-    .text("بازگشت", Callbacks.adminUsersList(listFilter, listPage));
+    .text("🔙 بازگشت", Callbacks.adminUsersList(listFilter, listPage));
 }
 
 export function adminStatsKeyboard(activeTimeframe: string): InlineKeyboard {
@@ -805,7 +804,7 @@ export function adminSuppliersKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
   kb.text("➕ افزودن کلید تامین‑کننده (API Key)", "adm:sup:addkey").row();
   kb.text("🔄 تنظیم نگاشت محصولات (Mapping)", "adm:sup:map").row();
-  kb.text("📥 محصولات جدید در انتظار", "adm:sup:pending").row();
+  kb.text("📥 محصولات جدید در انتظار", "adm:sup:pending:from:suppliers").row();
   kb.text("همگام‌سازی نام‌ها از کنبوسو", "adm:sup:syncnames").row();
   appendNavBar(kb, {
     text: "🔙 بازگشت به پنل",

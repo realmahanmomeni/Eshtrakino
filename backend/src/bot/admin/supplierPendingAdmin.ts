@@ -28,6 +28,7 @@ import {
 import { registerPendingImportPlacementConversations } from "./pendingImportPlacementConversation";
 import { suggestPendingImportSubCategoryName } from "../../services/suppliers/pendingImportBrandName";
 import { registerSupplierNameSyncAdmin } from "./supplierNameSyncAdmin";
+import { Callbacks } from "../keyboards/callbacks";
 
 type ListFilter = "PENDING" | "REJECTED";
 
@@ -51,11 +52,18 @@ function parseListCallback(data: string): { filter: ListFilter; page: number } {
   return { filter: "PENDING", page: 0 };
 }
 
+function pendingListBackCallback(ctx: BotContext): string {
+  return ctx.session.adminPendingListBack === "home"
+    ? Callbacks.adminHome
+    : "adm:suppliers";
+}
+
 async function presentPendingList(
   ctx: BotContext,
   filter: ListFilter = "PENDING",
   page = 0,
 ): Promise<void> {
+  const backData = pendingListBackCallback(ctx);
   const status =
     filter === "PENDING"
       ? SupplierPendingImportStatus.PENDING
@@ -90,7 +98,7 @@ async function presentPendingList(
     .row();
 
   if (rows.length === 0) {
-    kb.text("🔙 بازگشت", "adm:suppliers").row();
+    kb.text("🔙 بازگشت", backData).row();
     await safeEdit(
       ctx,
       [
@@ -128,7 +136,7 @@ async function presentPendingList(
     kb.row();
   }
 
-  kb.text("🔙 بازگشت", "adm:suppliers").row();
+  kb.text("🔙 بازگشت", backData).row();
 
   const from = page * PENDING_LIST_PAGE_SIZE + 1;
   const to = page * PENDING_LIST_PAGE_SIZE + rows.length;
@@ -264,9 +272,12 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
   registerPendingImportPlacementConversations(bot);
   bot.use(createConversation(setPendingImportMarginConversation, "setPendingImportMargin"));
 
-  admin.callbackQuery("adm:sup:pending", async (ctx) => {
+  admin.callbackQuery(/^adm:sup:pending(?::from:(home|suppliers))?$/, async (ctx) => {
     if (!(await guardCatalogAdmin(ctx))) return;
     await ctx.answerCallbackQuery();
+    const from = ctx.match![1];
+    ctx.session.adminPendingListBack =
+      from === "home" ? "home" : "suppliers";
     await presentPendingList(ctx, "PENDING", 0);
   });
 

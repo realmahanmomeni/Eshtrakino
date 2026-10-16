@@ -1,10 +1,14 @@
-import { normalizeArabicToPersianChars, truncateInlineButtonLabel } from "../../lib/telegramLabel";
+import {
+  isolateEmbeddedLatin,
+  normalizeArabicToPersianChars,
+  truncateInlineButtonLabel,
+} from "../../lib/telegramLabel";
 import { normalizeDurationPhrases, stripTitleGarbage } from "./productTitlePolish";
 
 const EMOJI_RE = /\p{Extended_Pictographic}/gu;
 
 const GUARANTEE_PAREN_RE =
-  /\(\s*[^)]*(?:گارانتی|guarantee|warranty)[^)]*\)/gi;
+  /\(\s*[^)]*(?:گارانتی|guarantee|warranty|بازخرید)[^)]*\)/gi;
 const GUARANTEE_BRACKET_RE =
   /\[\s*[^\]]*(?:گارانتی|guarantee|warranty)[^\]]*\]/gi;
 
@@ -21,22 +25,62 @@ function extractDurationHint(text: string): string | null {
   return m ? m[0].replace(/\s+/g, " ").trim() : null;
 }
 
+function extractQuantityHint(text: string): string | null {
+  const normalized = normalizeDurationPhrases(text);
+  const credit =
+    normalized.match(
+      /(?:\+?\s*)?(?:[\d۰-۹]+)\s*(?:هزار|میلیون|میلیارد)\s*(?:اعتبار|توکن|credit|token)?/i,
+    ) ??
+    normalized.match(
+      /(?:[\d۰-۹]+)\s*(?:هزار|میلیون|میلیارد)\s*(?:توکن|token|اعتبار)/i,
+    );
+  if (credit) return credit[0].replace(/\s+/g, " ").trim();
+
+  const apiCredits = normalized.match(/\b(?:API\s*)?(?:[\d۰-۹]+)\s*(?:اعتبار|credit)/i);
+  if (apiCredits) return apiCredits[0].replace(/\s+/g, " ").trim();
+
+  return null;
+}
+
+function detectLatinBrand(blob: string): string | null {
+  const patterns: Array<[RegExp, string]> = [
+    [/freepik(?:\s*\(\s*magnific\s*\))?/i, "FreePik"],
+    [/muse\s*ai/i, "Muse AI"],
+    [/quilbot/i, "Quilbot"],
+    [/cursor(?:\s*pro)?/i, "Cursor"],
+    [/runway(?:\s*max)?/i, "Runway"],
+  ];
+  for (const [re, label] of patterns) {
+    if (re.test(blob)) return label;
+  }
+  return null;
+}
+
+function planKeyword(blob: string): string | null {
+  if (/magnific/i.test(blob)) return "magnific";
+  if (/پریمیوم|premium/i.test(blob)) return "پریمیوم";
+  if (/pro\s*max|max/i.test(blob)) return "Max";
+  if (/\bpro\b/i.test(blob)) return "Pro";
+  if (/plus/i.test(blob)) return "Plus";
+  return null;
+}
+
 function linkedInShortName(blob: string): string | null {
   const duration = extractDurationHint(blob) ?? "۱ ماهه";
   if (/sales\s*navigator|سیلز\s*نا/i.test(blob)) {
-    return truncateInlineButtonLabel(`سیلز ناویگیتور ${duration}`, 32);
+    return `سیلز ناویگیتور ${duration}`;
   }
   if (/career|کریر/i.test(blob)) {
-    return truncateInlineButtonLabel(`لینکدین کریر ${duration}`, 32);
+    return `لینکدین کریر ${duration}`;
   }
   if (/business|بیزنس/i.test(blob)) {
-    return truncateInlineButtonLabel(`لینکدین بیزنس ${duration}`, 32);
+    return `لینکدین بیزنس ${duration}`;
   }
   if (/job\s*post|کد\s*شغل|شغلی/i.test(blob)) {
-    return truncateInlineButtonLabel(`لینکدین کد شغلی ${duration}`, 32);
+    return `لینکدین کد شغلی ${duration}`;
   }
   if (/linkedin|لینکدین/i.test(blob)) {
-    return truncateInlineButtonLabel(`لینکدین ${duration}`, 32);
+    return `لینکدین ${duration}`;
   }
   return null;
 }
@@ -47,6 +91,16 @@ function brandPrefixFromName(brandName: string | null | undefined): string | nul
   const beforeSep = brand.split(/[|—–\-]/)[0]?.trim();
   const core = (beforeSep && beforeSep.length >= 2 ? beforeSep : brand).slice(0, 24);
   return normalizeArabicToPersianChars(core);
+}
+
+function composeShortName(parts: Array<string | null | undefined>, maxLen: number): string {
+  const joined = parts
+    .filter((p): p is string => Boolean(p?.trim()))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const withBidi = isolateEmbeddedLatin(joined);
+  return truncateInlineButtonLabel(withBidi, maxLen);
 }
 
 /**
@@ -66,10 +120,37 @@ export function shortenSupplierProductName(
   blob = normalizeArabicToPersianChars(normalizeDurationPhrases(blob)).replace(/\s+/g, " ").trim();
 
   const linkedIn = linkedInShortName(`${options?.brandName ?? ""} ${blob}`);
-  if (linkedIn) return linkedIn;
+  if (linkedIn) return composeShortName([linkedIn], maxLen);
+
+  const latinBrand = detectLatinBrand(blob) ?? detectLatinBrand(options?.brandName ?? "");
+  const duration = extractDurationHint(blob);
+  const quantity = extractQuantityHint(blob);
+  const plan = planKeyword(blob);
+
+  if (latinBrand) {
+    if (/muse\s*ai/i.test(latinBrand) || /muse/i.test(blob)) {
+      const qty =
+        quantity ??
+        (/\b۱\s*میلیارد\b/.test(blob) ? "۱ میلیارد توکن" : null);
+      return composeShortName([latinBrand, qty ?? plan, duration], maxLen);
+    }
+    if (/freepik/i.test(latinBrand)) {
+      return composeShortName([latinBrand, plan, quantity, duration], maxLen);
+    }
+    if (/cursor/i.test(latinBrand)) {
+      const cursorQty = quantity ?? (/\b400\b/.test(blob) ? "۴۰۰ اعتبار" : null);
+      return composeShortName([latinBrand, plan, cursorQty, duration], maxLen);
+    }
+    if (/runway/i.test(latinBrand)) {
+      return composeShortName([latinBrand, plan, quantity, duration], maxLen);
+    }
+    if (/quilbot/i.test(latinBrand)) {
+      return composeShortName([latinBrand, plan ?? "پریمیوم", duration], maxLen);
+    }
+    return composeShortName([latinBrand, plan, quantity, duration], maxLen);
+  }
 
   const brandPrefix = brandPrefixFromName(options?.brandName);
-  const duration = extractDurationHint(blob);
 
   let candidate = blob;
   if (brandPrefix && !blob.toLowerCase().includes(brandPrefix.toLowerCase().slice(0, 4))) {
@@ -81,5 +162,5 @@ export function shortenSupplierProductName(
   candidate = candidate.replace(/\s+/g, " ").trim();
   if (!candidate) candidate = raw;
 
-  return truncateInlineButtonLabel(candidate, maxLen);
+  return composeShortName([candidate], maxLen);
 }

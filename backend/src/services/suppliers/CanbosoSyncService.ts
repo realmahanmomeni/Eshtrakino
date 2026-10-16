@@ -181,7 +181,15 @@ export class CanbosoSyncService {
 
     const mappings = await prisma.supplierProductMapping.findMany({
       where: { supplierId },
-      include: { product: { include: { category: true, subCategory: true } } },
+      include: {
+        product: {
+          include: {
+            category: true,
+            subCategory: true,
+            supplierProductMapping: true,
+          },
+        },
+      },
     });
 
     const usdRate = await exchangeRateService.getUsdToTomanRate();
@@ -218,6 +226,16 @@ export class CanbosoSyncService {
       }
 
       if (!remote) {
+        if (mapping.product.isActive) {
+          await prisma.product.update({
+            where: { id: mapping.productId },
+            data: { isActive: false },
+          });
+          console.warn(
+            `[CanbosoSync] Deactivated product #${mapping.productId} (${mapping.product.name}) — SKU ${mapping.supplierProductKey} missing from remote catalog`,
+          );
+          updated += 1;
+        }
         continue;
       }
 

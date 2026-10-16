@@ -21,7 +21,7 @@ import {
   adminBackupMenuKeyboard,
   adminCatalogKeyboard,
   adminSubCategoriesKeyboard,
-  adminHomeKeyboard,
+  adminHomeKeyboardAsync,
   adminForceJoinKeyboard,
   adminPaymentListKeyboard,
   adminPaymentsKeyboard,
@@ -1243,7 +1243,7 @@ export async function setLogGroupConversation(
     if (!text) {
       await ctx.reply(
         ["❌ *عملیات لغو شد*", "", "از پنل مدیریت دوباره شروع کنید."].join("\n"),
-        { parse_mode: "Markdown", reply_markup: adminHomeKeyboard() },
+        { parse_mode: "Markdown", reply_markup: await adminHomeKeyboardAsync() },
       );
       return;
     }
@@ -1256,7 +1256,7 @@ export async function setLogGroupConversation(
           "",
           "لطفا **آیدی عددی گروه** را بفرستید (مثلا `-1001234567890`).",
         ].join("\n"),
-        { parse_mode: "Markdown", reply_markup: adminHomeKeyboard() },
+        { parse_mode: "Markdown", reply_markup: await adminHomeKeyboardAsync() },
       );
       return;
     }
@@ -1264,13 +1264,13 @@ export async function setLogGroupConversation(
     await settingsService.setSetting(LOG_GROUP_ID_KEY, groupId);
 
     await ctx.reply("✅ گروه لاگ با موفقیت تنظیم شد.", {
-      reply_markup: adminHomeKeyboard(),
+      reply_markup: await adminHomeKeyboardAsync(),
     });
   } catch (err) {
     console.error("setLogGroupConversation error:", err);
     await ctx.reply(
       ["⚠️ *خطا در تنظیم گروه لاگ*", "", "لطفا دوباره تلاش کنید."].join("\n"),
-      { parse_mode: "Markdown", reply_markup: adminHomeKeyboard() },
+      { parse_mode: "Markdown", reply_markup: await adminHomeKeyboardAsync() },
     );
   }
 }
@@ -1581,7 +1581,7 @@ export async function addDiscountConversation(
         await ensurePanel(
           update,
           "❌ ثبت کد تخفیف لغو شد.",
-          adminHomeKeyboard(),
+          await adminHomeKeyboardAsync(),
           panel,
         );
         return;
@@ -1595,7 +1595,7 @@ export async function addDiscountConversation(
         await ensurePanel(
           update,
           "❌ ثبت کد تخفیف لغو شد.",
-          adminHomeKeyboard(),
+          await adminHomeKeyboardAsync(),
           panel,
         );
         return;
@@ -1641,7 +1641,7 @@ export async function addDiscountConversation(
             await ensurePanel(
               ctx,
               "⚠️ هیچ دسته‌بندی فعالی در سیستم تعریف نشده است.",
-              adminHomeKeyboard(),
+              await adminHomeKeyboardAsync(),
               panel,
             );
             return;
@@ -1729,7 +1729,7 @@ export async function addDiscountConversation(
           await ensurePanel(
             update,
             "❌ ثبت کد تخفیف لغو شد.",
-            adminHomeKeyboard(),
+            await adminHomeKeyboardAsync(),
             panel,
           );
           return;
@@ -1743,7 +1743,7 @@ export async function addDiscountConversation(
           await ensurePanel(
             update,
             "❌ ثبت کد تخفیف لغو شد.",
-            adminHomeKeyboard(),
+            await adminHomeKeyboardAsync(),
             panel,
           );
           return;

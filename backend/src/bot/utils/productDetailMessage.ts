@@ -31,7 +31,10 @@ export function truncateCatalogText(text: string, maxLen: number): { text: strin
   } else if (lastSpace > budget * 0.4) {
     cut = lastSpace;
   }
-  const head = trimmed.slice(0, cut).trimEnd();
+  const head = trimmed
+    .slice(0, cut)
+    .trimEnd()
+    .replace(/[.…\u2026]+$/u, "");
   return { text: `${head}…`, truncated: true };
 }
 

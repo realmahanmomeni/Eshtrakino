@@ -7,31 +7,50 @@ import { isStarsCatalog } from "./starsPricingService";
 export const OUT_OF_STOCK_ALERT =
   "⚠️ این محصول در حال حاضر ناموجود است. با زدن دکمه «بروزرسانی» می‌توانید آخرین وضعیت را بررسی کنید.";
 
-/** Products fulfilled internally by اشتراکینو — never routed to external supplier APIs. */
+/** Category/subcategory for Telegram Premium & Stars (manual Eshtrakino fulfillment). */
+export function isTelegramServicesCategory(
+  category?: { name: string } | null,
+  subCategory?: { name: string } | null,
+): boolean {
+  const cat = category?.name ?? "";
+  const sub = subCategory?.name ?? "";
+  return (
+    /(?:تلگرام|telegram)/i.test(cat) ||
+    /(?:تلگرام|telegram)/i.test(sub) ||
+    /خدمات\s*تلگرام/i.test(cat)
+  );
+}
+
+function isTelegramPremiumProductName(name: string): boolean {
+  return /premium|پریمیوم|پرمیوم/i.test(name);
+}
+
+/**
+ * Products fulfilled internally by اشتراکینو — Telegram Premium & Stars in the Telegram services category only.
+ * Supplier-mapped products outside that category always use Canboso.
+ */
 export function isInternalEshtrakinoFulfillment(product: {
   name: string;
   deliveryType: DeliveryType;
   category?: { name: string } | null;
   subCategory?: { name: string } | null;
+  supplierProductMapping?: { id: number } | null;
 }): boolean {
-  const cat = product.category?.name ?? "";
-  const sub = product.subCategory?.name ?? "";
-  const blob = `${cat} ${sub} ${product.name}`;
+  const inTelegramServices = isTelegramServicesCategory(product.category, product.subCategory);
 
-  if (isStarsCatalog(blob)) {
+  if (product.supplierProductMapping && !inTelegramServices) {
+    return false;
+  }
+
+  if (!inTelegramServices) {
+    return false;
+  }
+
+  if (isStarsCatalog(product.name)) {
     return true;
   }
 
-  if (/premium|پریمیوم|پرمیوم/i.test(blob)) {
-    return true;
-  }
-
-  if (/خدمات تلگرام/i.test(cat) && (isStarsCatalog(product.name) || /premium|پریمیوم/i.test(product.name))) {
-    return true;
-  }
-
-  return product.deliveryType === DeliveryType.MANUAL &&
-    /premium|پریمیوم|استارز|stars/i.test(blob);
+  return isTelegramPremiumProductName(product.name);
 }
 
 export function withOutOfStockPrefix(label: string, outOfStock: boolean): string {
