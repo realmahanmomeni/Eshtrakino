@@ -59,6 +59,10 @@ import {
   presentShopCategories,
   sanitizeCustomerCatalogText,
 } from "../utils/catalogUi";
+import {
+  buildDescriptionContinuationMessages,
+  buildProductDetailPayload,
+} from "../utils/productDetailMessage";
 import { lazyCacheService } from "../../services/catalog/LazyCacheService";
 import {
   verifyBeforeCheckout,
@@ -72,7 +76,7 @@ import {
 import { SupplierRateLimitError } from "../../services/suppliers/SupplierAdapter";
 import { CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE } from "../../services/suppliers/adapters/CanbosoAdapter";
 import { InlineKeyboard } from "grammy";
-import { adminHomeKeyboard } from "../admin/keyboards";
+import { adminHomeKeyboardAsync } from "../admin/keyboards";
 import { hasAnyAdminAccess } from "../admin/rbac";
 
 function menuKb(hasPending: boolean, telegramId?: number) {
@@ -355,20 +359,13 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       await ctx.answerCallbackQuery({ text: OUT_OF_STOCK_ALERT, show_alert: true });
     }
 
-    const description = sanitizeCustomerCatalogText(catalogService.descriptionOf(product));
+    const description = catalogService.descriptionOf(product);
     const effectivePrice = await catalogService.getEffectivePrice(product);
-    const caption = [
-      `${emojiForLabel(product.name)} *${product.name}*`,
-      "",
-      `💰 قیمت: *${formatToman(effectivePrice)}*`,
-      `⏱ زمان تحویل: *${deliveryTypeLabel(product.deliveryType)}*`,
-      "",
-      "🔖 *توضیحات محصول*",
-      "",
+    const detail = buildProductDetailPayload({
+      product,
       description,
-      "",
-      "👇 برای ادامه، دکمه خرید را بزنید:",
-    ].join("\n");
+      effectivePrice,
+    });
 
     const fallbackBanner =
       product.subCategory?.bannerUrl?.trim() ||
@@ -380,23 +377,80 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       product.id,
       product.categoryId,
       product.subCategoryId,
+      { showDescriptionMore: detail.descriptionTruncated },
     );
 
-    if (!forceReply && ctx.callbackQuery) {
-      await safeEditMedia(ctx, media, caption, kb);
-    } else {
-      try {
-        await ctx.replyWithPhoto(media, {
-          caption,
-          parse_mode: "Markdown",
-          reply_markup: kb,
+    const sendFallbackText = async (): Promise<void> => {
+      await ctx.reply(detail.captionHtml, {
+        parse_mode: detail.parseMode,
+        reply_markup: kb,
+      });
+    };
+
+    try {
+      if (!forceReply && ctx.callbackQuery) {
+        await safeEditMedia(ctx, media, detail.captionHtml, kb, "photo", {
+          parse_mode: detail.parseMode,
         });
-      } catch {
-        await ctx.reply(caption, {
-          parse_mode: "Markdown",
-          reply_markup: kb,
-        });
+      } else {
+        try {
+          await ctx.replyWithPhoto(media, {
+            caption: detail.captionHtml,
+            parse_mode: detail.parseMode,
+            reply_markup: kb,
+          });
+        } catch {
+          await sendFallbackText();
+        }
       }
+    } catch (err) {
+      console.error("[showProductDetail] send failed:", err);
+      if (ctx.callbackQuery) {
+        await ctx
+          .answerCallbackQuery({
+            text: "نمایش جزئیات محصول ناموفق بود. دوباره تلاش کنید.",
+            show_alert: true,
+          })
+          .catch(() => undefined);
+      }
+      try {
+        await sendFallbackText();
+      } catch (fallbackErr) {
+        console.error("[showProductDetail] fallback failed:", fallbackErr);
+        await ctx.reply(
+          "⚠️ نمایش جزئیات این محصول ممکن نشد. لطفاً دوباره از فهرست انتخاب کنید یا با پشتیبانی تماس بگیرید.",
+        );
+      }
+    }
+  }
+
+  async function sendProductDescriptionContinuation(
+    ctx: BotContext,
+    productId: number,
+  ): Promise<void> {
+    const product = await catalogService.getProduct(productId, false);
+    if (!product) {
+      await ctx.answerCallbackQuery({ text: "محصول یافت نشد", show_alert: true });
+      return;
+    }
+    const full = sanitizeCustomerCatalogText(catalogService.descriptionOf(product));
+    const detail = buildProductDetailPayload({
+      product,
+      description: full,
+      effectivePrice: await catalogService.getEffectivePrice(product),
+    });
+    const parts = buildDescriptionContinuationMessages(detail.descriptionRemainder);
+    if (parts.length === 0) {
+      await ctx.answerCallbackQuery({ text: "توضیحات بیشتری وجود ندارد." });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const escapeHtml = (t: string) =>
+      t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    for (const part of parts) {
+      await ctx.reply(`📄 <b>ادامه توضیحات</b>\n\n${escapeHtml(part)}`, {
+        parse_mode: "HTML",
+      });
     }
   }
 
@@ -576,7 +630,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) return;
     await ctx.reply(
       "🛠 *پنل مدیریت اشتراکینو*\n\nاز منوی زیر بخش مورد نظر را انتخاب کنید:",
-      { parse_mode: "Markdown", reply_markup: adminHomeKeyboard() },
+      { parse_mode: "Markdown", reply_markup: await adminHomeKeyboardAsync() },
     );
   });
 
@@ -728,6 +782,11 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await ctx.answerCallbackQuery();
     const productId = Number(ctx.match![1]);
     await showProductDetail(ctx, productId);
+  });
+
+  bot.callbackQuery(/^prod:desc:(\d+)$/, async (ctx) => {
+    const productId = Number(ctx.match![1]);
+    await sendProductDescriptionContinuation(ctx, productId);
   });
 
   bot.callbackQuery(/^buy:(\d+)$/, async (ctx) => {

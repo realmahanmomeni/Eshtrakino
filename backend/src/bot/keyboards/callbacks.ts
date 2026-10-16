@@ -26,6 +26,7 @@ export const Callbacks = {
   subCategory: (subCategoryId: number) => `subcat:view:${subCategoryId}`,
   subCategoryView: (subCategoryId: number) => `subcat:view:${subCategoryId}`,
   viewProduct: (productId: number) => `prod:view:${productId}`,
+  productDescriptionMore: (productId: number) => `prod:desc:${productId}`,
   buy: (productId: number) => `buy:${productId}`,
   buyConfirmNewPrice: (productId: number) => `buy:confirm_new:${productId}`,
   buyCancelNewPrice: "buy:cancel_new",

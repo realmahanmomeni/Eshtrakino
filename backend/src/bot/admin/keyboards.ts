@@ -1,5 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import type { Category, PaymentMethod, Product, DeliveryType, PaymentMethodType } from "@prisma/client";
+import { SupplierPendingImportStatus } from "@prisma/client";
+import { prisma } from "../../lib/prisma";
 import { Callbacks } from "../keyboards/callbacks";
 import {
   appendFullWidthCta,
@@ -59,10 +61,14 @@ export const ConvCb = {
   discountCancel: "dsc:cancel",
 } as const;
 
-export function adminHomeKeyboard(): InlineKeyboard {
+export function adminHomeKeyboard(options?: { pendingImportCount?: number }): InlineKeyboard {
   const kb = new InlineKeyboard();
+  const pendingCount = options?.pendingImportCount ?? 0;
+  const pendingLabel =
+    pendingCount > 0 ? `📥 محصولات جدید (${pendingCount})` : "📥 محصولات جدید";
 
   const actions = [
+    { text: pendingLabel, data: "adm:sup:pending" },
     { text: "💳 مدیریت پرداخت", data: Callbacks.adminPayments },
     { text: "📦 مدیریت کاتالوگ", data: Callbacks.adminCatalog },
     { text: "🎫 مدیریت تیکتها", data: Callbacks.adminTickets },
@@ -86,6 +92,13 @@ export function adminHomeKeyboard(): InlineKeyboard {
     data: Callbacks.mainMenu,
   });
   return kb;
+}
+
+export async function adminHomeKeyboardAsync(): Promise<InlineKeyboard> {
+  const pendingImportCount = await prisma.supplierPendingImport.count({
+    where: { status: SupplierPendingImportStatus.PENDING },
+  });
+  return adminHomeKeyboard({ pendingImportCount });
 }
 
 export function convDiscountScopeKeyboard(): InlineKeyboard {
@@ -790,9 +803,10 @@ export function convPaymentTypeKeyboard(): InlineKeyboard {
 
 export function adminSuppliersKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  kb.text("➕ افزودن کلید تامین‌کننده (API Key)", "adm:sup:addkey").row();
+  kb.text("➕ افزودن کلید تامین‑کننده (API Key)", "adm:sup:addkey").row();
   kb.text("🔄 تنظیم نگاشت محصولات (Mapping)", "adm:sup:map").row();
   kb.text("📥 محصولات جدید در انتظار", "adm:sup:pending").row();
+  kb.text("همگام‌سازی نام‌ها از کنبوسو", "adm:sup:syncnames").row();
   appendNavBar(kb, {
     text: "🔙 بازگشت به پنل",
     data: Callbacks.adminHome,

@@ -1,6 +1,7 @@
 import { DeliveryType } from "@prisma/client";
 import type { Api } from "grammy";
 import { polishCustomerProductTitle } from "../catalog/productTitlePolish";
+import { shortenSupplierProductName } from "../catalog/shortenSupplierProductName";
 import { prisma } from "../../lib/prisma";
 import { isInternalEshtrakinoFulfillment } from "../catalog/catalogAvailability";
 import {
@@ -544,7 +545,7 @@ export class CanbosoSyncService {
 
     const product = await prisma.product.create({
       data: {
-        name: polishCustomerProductTitle(remote.brandName ?? remote.name),
+        name: shortenSupplierProductName(remote.name, { brandName: remote.brandName }),
         price: convertUsdToToman(supplierCostUsd, usdRate),
         currency: "USD",
         usdPrice: supplierCostUsd,

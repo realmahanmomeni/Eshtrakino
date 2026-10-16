@@ -37,6 +37,8 @@ export interface SessionData {
   pendingInvoiceId?: number;
   /** Opens price edit sub-flow immediately inside editProduct conversation */
   adminOpenProductPriceEdit?: boolean;
+  /** Product ids from last Canboso name-sync preview (adm:sup:syncnames) */
+  supplierNameSyncIds?: number[];
 };
 
 /** Explicit defaults for `session({ initial })` — keeps keys defined. */
@@ -63,6 +65,7 @@ export function createInitialSession(): SessionData {
     adminReplyTicketId: undefined,
     discountInvoiceId: undefined,
     pendingInvoiceId: undefined,
+    supplierNameSyncIds: undefined,
   };
 }
 

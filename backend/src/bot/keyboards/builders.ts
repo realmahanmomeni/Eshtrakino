@@ -16,6 +16,7 @@ import {
   getSubCategoryCustomEmojiId,
 } from "./buttonEmojis";
 import { withOutOfStockPrefix } from "../../services/catalog/catalogAvailability";
+import { truncateInlineButtonLabel } from "../../lib/telegramLabel";
 
 /**
  * Layout order (top → bottom):
@@ -163,7 +164,47 @@ export function searchResultsKeyboard(
 }
 
 function truncateLabel(name: string, max = 40): string {
-  return name.length > max ? `${name.slice(0, max - 1)}…` : name;
+  return truncateInlineButtonLabel(name, max);
+}
+
+function extractDurationSuffix(name: string): string | null {
+  const m = name.match(
+    /(?:۱|۲|۳|۴|۵|۶|۷|۸|۹|۰|\d+)\s*(?:ماهه?|ساله?|روزه?)/,
+  );
+  return m ? m[0].replace(/\s+/g, " ").trim() : null;
+}
+
+/** Keep inline shop labels distinct within one list (append duration or price when names collide). */
+export function shopProductButtonLabels(
+  products: Array<{ id: number; name: string; formattedPrice?: string }>,
+  maxCore = 35,
+): Map<number, string> {
+  const cleaned = products.map((p) => ({
+    id: p.id,
+    base: cleanProductLabel(p.name),
+    price: p.formattedPrice?.trim(),
+  }));
+  const counts = new Map<string, number>();
+  for (const p of cleaned) {
+    counts.set(p.base, (counts.get(p.base) ?? 0) + 1);
+  }
+
+  const labels = new Map<number, string>();
+  for (const p of cleaned) {
+    let label = p.base;
+    if ((counts.get(p.base) ?? 0) > 1) {
+      const duration = extractDurationSuffix(p.base);
+      if (duration && !label.includes(duration)) {
+        label = `${label} ${duration}`;
+      } else if (p.price) {
+        label = `${label} · ${p.price}`;
+      } else {
+        label = `${label} #${p.id}`;
+      }
+    }
+    labels.set(p.id, truncateLabel(label, maxCore));
+  }
+  return labels;
 }
 
 /**
@@ -204,9 +245,10 @@ export function categoryContentsKeyboard(
   }
 
   if (standaloneProducts.length > 0) {
+    const labelById = shopProductButtonLabels(standaloneProducts);
     const prodButtons: KeyboardButton[] = standaloneProducts.map((p) => {
       const customEmojiId = getProductCustomEmojiId(p.name);
-      const namePart = truncateLabel(cleanProductLabel(p.name), 35);
+      const namePart = labelById.get(p.id) ?? truncateLabel(cleanProductLabel(p.name), 35);
       const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
       return {
         text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
@@ -259,9 +301,10 @@ export function servicePlansKeyboard(
   subCategoryId?: number,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
+  const labelById = shopProductButtonLabels(products);
   for (const p of products) {
     const customEmojiId = getProductCustomEmojiId(p.name);
-    const namePart = truncateLabel(cleanProductLabel(p.name), 35);
+    const namePart = labelById.get(p.id) ?? truncateLabel(cleanProductLabel(p.name), 35);
     const label = withOutOfStockPrefix(namePart, Boolean(p.outOfStock));
     appendFullWidthCta(
       kb,
@@ -294,8 +337,12 @@ export function productDetailKeyboard(
   productId: number,
   categoryId: number,
   subCategoryId?: number | null,
+  options?: { showDescriptionMore?: boolean },
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
+  if (options?.showDescriptionMore) {
+    appendFullWidthCta(kb, "📄 ادامه توضیحات", Callbacks.productDescriptionMore(productId));
+  }
   appendFullWidthCta(
     kb,
     "خرید این محصول",
