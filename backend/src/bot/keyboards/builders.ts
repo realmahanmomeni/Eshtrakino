@@ -227,6 +227,8 @@ export function categoryContentsKeyboard(
     hasPendingInvoice?: boolean;
     layoutColumns?: 1 | 2;
     categoryId?: number;
+    subCategoryId?: number;
+    adminOutOfStockToggle?: { showing: boolean };
   },
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
@@ -265,6 +267,15 @@ export function categoryContentsKeyboard(
 
   appendFullWidthCta(kb, SHOP_SEARCH_BTN, Callbacks.shopSearch, BUTTON_CUSTOM_EMOJIS.SEARCH);
 
+  if (options?.adminOutOfStockToggle) {
+    kb.row().text(
+      options.adminOutOfStockToggle.showing
+        ? "🙈 مخفی کردن ناموجودها"
+        : "👁 نمایش ناموجودها",
+      Callbacks.shopToggleOutOfStock,
+    );
+  }
+
   if (options?.categoryId != null) {
     kb.row().text("🔄 بروزرسانی قیمت و موجودی", Callbacks.categoryRefresh(options.categoryId));
   }
@@ -299,6 +310,9 @@ export function servicePlansKeyboard(
   categoryId: number,
   categoryName?: string,
   subCategoryId?: number,
+  options?: {
+    adminOutOfStockToggle?: { showing: boolean };
+  },
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   const labelById = shopProductButtonLabels(products);
@@ -311,6 +325,14 @@ export function servicePlansKeyboard(
       label.length > 64 ? `${label.slice(0, 61)}…` : label,
       Callbacks.viewProduct(p.id),
       customEmojiId,
+    );
+  }
+  if (options?.adminOutOfStockToggle) {
+    kb.row().text(
+      options.adminOutOfStockToggle.showing
+        ? "🙈 مخفی کردن ناموجودها"
+        : "👁 نمایش ناموجودها",
+      Callbacks.shopToggleOutOfStock,
     );
   }
   if (subCategoryId != null) {
@@ -337,18 +359,20 @@ export function productDetailKeyboard(
   productId: number,
   categoryId: number,
   subCategoryId?: number | null,
-  options?: { showDescriptionMore?: boolean },
+  options?: { showDescriptionMore?: boolean; allowPurchase?: boolean },
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (options?.showDescriptionMore) {
     appendFullWidthCta(kb, "📄 ادامه توضیحات", Callbacks.productDescriptionMore(productId));
   }
-  appendFullWidthCta(
-    kb,
-    "خرید این محصول",
-    Callbacks.buy(productId),
-    BUTTON_CUSTOM_EMOJIS.BUY,
-  );
+  if (options?.allowPurchase !== false) {
+    appendFullWidthCta(
+      kb,
+      "خرید این محصول",
+      Callbacks.buy(productId),
+      BUTTON_CUSTOM_EMOJIS.BUY,
+    );
+  }
   if (subCategoryId != null) {
     appendNavBar(kb, {
       text: "بازگشت",

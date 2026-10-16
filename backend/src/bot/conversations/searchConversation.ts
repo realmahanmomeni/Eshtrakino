@@ -4,6 +4,8 @@ import { searchCatalogProducts } from "../../services/catalog/productSearchServi
 import { isProductOutOfStockById } from "../../services/catalog/catalogAvailability";
 import { searchResultsKeyboard } from "../keyboards/builders";
 import { sanitizeCustomerCatalogText } from "../utils/catalogUi";
+import { ensureShopCatalogFresh } from "../../services/catalog/shopAvailability";
+import { hasAnyAdminAccess } from "../admin/rbac";
 
 const SEARCH_PROMPT = [
   "🔍 **جستجو در محصولات اشتراکینو**",
@@ -32,14 +34,21 @@ export async function shopSearchConversation(
 
   const displayQuery = sanitizeCustomerCatalogText(query.trim());
 
+  const telegramId = ctx.from.id;
+  const sessionShowOos = ctx.session.shopShowOutOfStock === true;
   const productsUi = await conversation.external(async (): Promise<SearchResultUiRow[]> => {
+    await ensureShopCatalogFresh();
     const hits = await searchCatalogProducts(query);
+    const showOos =
+      sessionShowOos && (await hasAnyAdminAccess(telegramId));
     const list: SearchResultUiRow[] = [];
     for (const p of hits) {
+      const outOfStock = await isProductOutOfStockById(p.id);
+      if (!showOos && outOfStock) continue;
       list.push({
         id: p.id,
         name: sanitizeCustomerCatalogText(p.name),
-        outOfStock: await isProductOutOfStockById(p.id),
+        outOfStock,
       });
     }
     return list;

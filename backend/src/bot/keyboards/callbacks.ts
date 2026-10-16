@@ -8,6 +8,7 @@ export const Callbacks = {
   shopRoot: "shop:root",
   shopSearch: "shop:search",
   shopRefresh: "shop:refresh",
+  shopToggleOutOfStock: "shop:oos_toggle",
   categoryRefresh: (categoryId: number) => `cat:refresh:${categoryId}`,
   account: "menu:account",
   wallet: "menu:wallet",

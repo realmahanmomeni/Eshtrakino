@@ -60,6 +60,13 @@ import {
   sanitizeCustomerCatalogText,
 } from "../utils/catalogUi";
 import {
+  ensureShopCatalogFresh,
+  filterAvailabilityRowsForShop,
+  subCategoryHasShopAvailableProduct,
+} from "../../services/catalog/shopAvailability";
+import { resolveShopShowOutOfStock, toggleShopShowOutOfStock } from "../utils/shopBrowse";
+import { hasAnyAdminAccess } from "../admin/rbac";
+import {
   buildDescriptionContinuationMessages,
   buildProductDetailPayload,
 } from "../utils/productDetailMessage";
@@ -77,7 +84,6 @@ import { SupplierRateLimitError } from "../../services/suppliers/SupplierAdapter
 import { CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE } from "../../services/suppliers/adapters/CanbosoAdapter";
 import { InlineKeyboard } from "grammy";
 import { adminHomeKeyboardAsync } from "../admin/keyboards";
-import { hasAnyAdminAccess } from "../admin/rbac";
 
 function menuKb(hasPending: boolean, telegramId?: number) {
   return mainMenuKeyboard(hasPending, isAdminTelegramId(telegramId));
@@ -334,6 +340,8 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   });
 
   async function showProductDetail(ctx: BotContext, productId: number, forceReply = false): Promise<void> {
+    await ensureShopCatalogFresh();
+    const showOos = await resolveShopShowOutOfStock(ctx);
     const product = await catalogService.getProduct(productId, false);
 
     if (!product) {
@@ -355,6 +363,31 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     }
 
     const outOfStock = await isProductOutOfStock(product);
+    const mayViewUnavailable = showOos && ctx.from && (await hasAnyAdminAccess(ctx.from.id));
+
+    if (outOfStock && !mayViewUnavailable) {
+      const backKb = productDetailKeyboard(
+        product.id,
+        product.categoryId,
+        product.subCategoryId,
+        { allowPurchase: false },
+      );
+      const msg = "❌ *ناموجود*\n\nاین محصول در حال حاضر موجود نیست.";
+      if (!forceReply && ctx.callbackQuery) {
+        await safeEditMedia(
+          ctx,
+          product.subCategory?.bannerUrl?.trim() ||
+            product.category?.bannerUrl?.trim() ||
+            BannerAssets.category,
+          msg,
+          backKb,
+        );
+      } else {
+        await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: backKb });
+      }
+      return;
+    }
+
     if (outOfStock && ctx.callbackQuery) {
       await ctx.answerCallbackQuery({ text: OUT_OF_STOCK_ALERT, show_alert: true });
     }
@@ -377,7 +410,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       product.id,
       product.categoryId,
       product.subCategoryId,
-      { showDescriptionMore: detail.descriptionTruncated },
+      {
+        showDescriptionMore: detail.descriptionTruncated,
+        allowPurchase: !outOfStock,
+      },
     );
 
     const sendFallbackText = async (): Promise<void> => {
@@ -455,6 +491,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   }
 
   async function showSubCategoryDetail(ctx: BotContext, subCategoryId: number, forceReply = false): Promise<void> {
+    await ensureShopCatalogFresh();
+    const showOos = await resolveShopShowOutOfStock(ctx);
+    const isAdmin = ctx.from ? await hasAnyAdminAccess(ctx.from.id) : false;
+
     const subCategory = await catalogService.getSubCategoryById(subCategoryId);
 
     if (!subCategory || !subCategory.isActive) {
@@ -472,9 +512,24 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const category = await catalogService.getCategory(subCategory.categoryId);
     const categoryName = category?.name ?? "دسته بندی";
 
+    if (!showOos && !(await subCategoryHasShopAvailableProduct(subCategoryId))) {
+      const msg = [
+        `✨ *${subCategory.name}*`,
+        "",
+        "فعلاً محصول قابل خریدی در این سرویس موجود نیست.",
+      ].join("\n");
+      const backKb = servicePlansKeyboard([], subCategory.categoryId, categoryName, subCategoryId);
+      if (!forceReply && ctx.callbackQuery) {
+        await safeEditMedia(ctx, BannerAssets.category, msg, backKb);
+      } else {
+        await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: backKb });
+      }
+      return;
+    }
+
     const rawProducts = await catalogService.listDisplayProductsBySubCategory(subCategoryId);
 
-    const planProducts = await Promise.all(
+    const planProductsAll = await Promise.all(
       rawProducts.map(async (p) => {
         const effectivePrice = await catalogService.getEffectivePrice(p);
         return {
@@ -485,6 +540,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         };
       }),
     );
+    const planProducts = filterAvailabilityRowsForShop(planProductsAll, showOos);
 
     const subBanner =
       subCategory.bannerUrl?.trim() ||
@@ -527,6 +583,9 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       subCategory.categoryId,
       categoryName,
       subCategoryId,
+      {
+        adminOutOfStockToggle: isAdmin ? { showing: showOos } : undefined,
+      },
     );
     const parse_mode = isStars ? "HTML" : "Markdown";
 
@@ -718,6 +777,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await ctx.answerCallbackQuery();
     const categoryId = Number(ctx.match![1]);
     ctx.session.lastCategoryId = categoryId;
+    ctx.session.lastShopSubCategoryId = undefined;
     await presentCategoryView(ctx, categoryId);
   });
 
@@ -775,7 +835,30 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   bot.callbackQuery(/^(?:subcat|subcat:view):(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const subCategoryId = Number(ctx.match![1]);
+    ctx.session.lastShopSubCategoryId = subCategoryId;
+    ctx.session.lastCategoryId = undefined;
     await showSubCategoryDetail(ctx, subCategoryId);
+  });
+
+  bot.callbackQuery(Callbacks.shopToggleOutOfStock, async (ctx) => {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    const showing = await toggleShopShowOutOfStock(ctx);
+    await ctx.answerCallbackQuery({
+      text: showing ? "ناموجودها نمایش داده می‌شوند" : "ناموجودها مخفی شدند",
+    });
+    const subId = ctx.session.lastShopSubCategoryId;
+    if (subId != null) {
+      await showSubCategoryDetail(ctx, subId);
+      return;
+    }
+    if (ctx.session.lastCategoryId != null) {
+      await presentCategoryView(ctx, ctx.session.lastCategoryId);
+      return;
+    }
+    await presentShopCategories(ctx, 2);
   });
 
   bot.callbackQuery(/^(?:prod|prod:view):(\d+)$/, async (ctx) => {
