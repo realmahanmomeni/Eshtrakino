@@ -69,6 +69,8 @@ import { hasAnyAdminAccess } from "../admin/rbac";
 import {
   buildDescriptionContinuationMessages,
   buildProductDetailPayload,
+  productDescriptionContinuationReplyOptions,
+  withProductDetailLinkPreviewDisabled,
 } from "../utils/productDetailMessage";
 import {
   verifyBeforeCheckout,
@@ -409,18 +411,25 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     );
 
     const sendFallbackText = async (): Promise<void> => {
-      await ctx.reply(detail.captionHtml, {
-        parse_mode: detail.parseMode,
-        reply_markup: kb,
-      });
+      await ctx.reply(
+        detail.captionHtml,
+        withProductDetailLinkPreviewDisabled({
+          parse_mode: detail.parseMode,
+          reply_markup: kb,
+        }),
+      );
     };
 
     try {
       if (!forceReply && ctx.callbackQuery) {
-        await safePresentShopText(ctx, detail.captionHtml, {
-          parse_mode: detail.parseMode,
-          reply_markup: kb,
-        });
+        await safePresentShopText(
+          ctx,
+          detail.captionHtml,
+          withProductDetailLinkPreviewDisabled({
+            parse_mode: detail.parseMode,
+            reply_markup: kb,
+          }),
+        );
       } else {
         await sendFallbackText();
       }
@@ -469,9 +478,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const escapeHtml = (t: string) =>
       t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     for (const part of parts) {
-      await ctx.reply(`📄 <b>ادامه توضیحات</b>\n\n${escapeHtml(part)}`, {
-        parse_mode: "HTML",
-      });
+      await ctx.reply(
+        `📄 <b>ادامه توضیحات</b>\n\n${escapeHtml(part)}`,
+        productDescriptionContinuationReplyOptions(),
+      );
     }
   }
 
