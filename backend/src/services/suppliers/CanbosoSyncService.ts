@@ -6,12 +6,17 @@ import { prisma } from "../../lib/prisma";
 import { isInternalEshtrakinoFulfillment } from "../catalog/catalogAvailability";
 import {
   assignProductToShopHierarchy,
-  normalizeSupplierProductName,
   repairAllProductSubCategories,
 } from "../catalog/catalogHierarchy";
 import { env } from "../../config/env";
 import { exchangeRateService, convertUsdToToman } from "../exchangeRateService";
 import { canbosoAdapter, type CanbosoCatalogProduct } from "./adapters/CanbosoAdapter";
+import {
+  findRemoteInBulkCatalog,
+  getCanbosoBulkCatalog,
+} from "./canboso/canbosoBulkCatalog";
+import { CANBOSO_BULK_IN_MEMORY_TTL_MS } from "./canboso/canbosoCatalogTtl";
+import { canFetchCanbosoCatalogFromNetwork } from "./canboso/canbosoManualRefreshGate";
 import { supplierCostUsdFromRemote } from "./canbosoCost";
 import {
   isChargeOrVariantOfMappedParent,
@@ -24,69 +29,11 @@ import { sanitizeCustomerCatalogText } from "../../bot/utils/catalogUi";
 
 export const CANBOSO_SUPPLIER_NAME = "Canboso";
 
-const BULK_CATALOG_TTL_MS = 45_000;
-
-type BulkCatalogCache = {
-  fetchedAt: number;
-  remoteProducts: CanbosoCatalogProduct[];
-  indexes: RemoteIndexes;
-};
-
-let bulkCatalogCache: BulkCatalogCache | null = null;
-
 let syncNotifyApi: Api | null = null;
 
 /** Registers bot API so new-supplier-product alerts can DM admins after sync. */
 export function setCanbosoSyncNotifyApi(api: Api): void {
   syncNotifyApi = api;
-}
-
-type RemoteIndexes = {
-  byId: Map<string, CanbosoCatalogProduct>;
-  byName: Map<string, CanbosoCatalogProduct>;
-};
-
-function buildRemoteIndexes(remoteProducts: CanbosoCatalogProduct[]): RemoteIndexes {
-  const byId = new Map<string, CanbosoCatalogProduct>();
-  const byName = new Map<string, CanbosoCatalogProduct>();
-  for (const p of remoteProducts) {
-    byId.set(p.productId, p);
-    byId.set(String(p.productId), p);
-    if (p.variantId) {
-      byId.set(p.variantId, p);
-      byId.set(String(p.variantId), p);
-    }
-    if (p.parentProductId && p.variantId) {
-      byId.set(`${p.parentProductId}:${p.variantId}`, p);
-    }
-    byName.set(normalizeSupplierProductName(p.name), p);
-    if (p.brandName) {
-      byName.set(normalizeSupplierProductName(p.brandName), p);
-    }
-  }
-  return { byId, byName };
-}
-
-function findRemoteProduct(
-  indexes: RemoteIndexes,
-  supplierProductKey: string,
-  localName: string,
-): CanbosoCatalogProduct | undefined {
-  const byKey = indexes.byId.get(supplierProductKey);
-  if (byKey) return byKey;
-
-  const normName = normalizeSupplierProductName(localName);
-  const byExactName = indexes.byName.get(normName);
-  if (byExactName) return byExactName;
-
-  for (const remote of indexes.byName.values()) {
-    const rName = normalizeSupplierProductName(remote.name);
-    if (rName.includes(normName) || normName.includes(rName)) {
-      return remote;
-    }
-  }
-
-  return undefined;
 }
 
 export class CanbosoSyncService {
@@ -216,31 +163,20 @@ export class CanbosoSyncService {
     }
 
     const force = options?.forceRefresh === true;
-    const now = Date.now();
-    if (
-      !force &&
-      bulkCatalogCache &&
-      now - bulkCatalogCache.fetchedAt < BULK_CATALOG_TTL_MS
-    ) {
-      /* use cache */
-    } else {
-      try {
-        const remoteProducts = await canbosoAdapter.getProducts();
-        bulkCatalogCache = {
-          fetchedAt: now,
-          remoteProducts,
-          indexes: buildRemoteIndexes(remoteProducts),
-        };
-      } catch (err) {
-        console.error("[CanbosoSync] Bulk catalog fetch failed:", err);
-        if (!bulkCatalogCache) {
-          return { updated: 0, imported: 0, queuedForReview: 0 };
-        }
-      }
+    const allowNetwork = !force || canFetchCanbosoCatalogFromNetwork();
+    let snap;
+    try {
+      snap = await getCanbosoBulkCatalog({
+        force: force && allowNetwork,
+        maxAgeMs: force && allowNetwork ? 0 : CANBOSO_BULK_IN_MEMORY_TTL_MS,
+        reason: force ? "sync-force" : "sync",
+      });
+    } catch (err) {
+      console.error("[CanbosoSync] Bulk catalog fetch failed:", err);
+      return { updated: 0, imported: 0, queuedForReview: 0 };
     }
 
-    const cache = bulkCatalogCache!;
-    const { indexes, remoteProducts } = cache;
+    const { indexes, remoteProducts } = snap;
     let updated = 0;
 
     const mappings = await prisma.supplierProductMapping.findMany({
@@ -255,7 +191,7 @@ export class CanbosoSyncService {
         continue;
       }
 
-      let remote = findRemoteProduct(
+      let remote = findRemoteInBulkCatalog(
         indexes,
         mapping.supplierProductKey,
         mapping.product.name,
@@ -320,12 +256,14 @@ export class CanbosoSyncService {
   }
 
   /** Idempotent sync — delegates to single-request bulk catalog (anti-429). */
-  async syncProductAvailability(): Promise<{
+  async syncProductAvailability(options?: {
+    forceRefresh?: boolean;
+  }): Promise<{
     updated: number;
     imported: number;
     queuedForReview: number;
   }> {
-    return this.syncAllSupplierProductsBulk();
+    return this.syncAllSupplierProductsBulk(options);
   }
 
   private async applyRemoteToLocalProduct(

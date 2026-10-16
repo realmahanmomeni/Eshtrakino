@@ -43,7 +43,6 @@ function needsSupplierLiveCheck(product: {
 }
 
 export async function verifyBeforeCheckout(productId: number): Promise<PrePaymentGuardResult> {
-  await lazyCacheService.refreshCatalogIfStale(false);
   const product = await prisma.product.findUnique({
     where: { id: productId },
     include: {

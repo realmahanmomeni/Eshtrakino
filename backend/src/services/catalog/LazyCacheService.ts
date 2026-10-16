@@ -1,6 +1,8 @@
 import { settingsService, LAST_CATALOG_SYNC_AT_KEY, LAST_FX_RATE_SYNC_AT_KEY } from "../settings/SettingsService";
 import { canbosoSyncService } from "../suppliers/CanbosoSyncService";
 import { exchangeRateService, EXCHANGE_RATE_TTL_MS } from "../exchangeRateService";
+import { CANBOSO_CATALOG_TTL_MS } from "../suppliers/canboso/canbosoCatalogTtl";
+import { canFetchCanbosoCatalogFromNetwork } from "../suppliers/canboso/canbosoManualRefreshGate";
 
 export const LAZY_CACHE_TTL_MS = EXCHANGE_RATE_TTL_MS;
 
@@ -24,7 +26,7 @@ export class LazyCacheService {
 
   async isCatalogStale(now = Date.now()): Promise<boolean> {
     const last = await this.getLastCatalogSyncAt();
-    return last <= 0 || now - last > LAZY_CACHE_TTL_MS;
+    return last <= 0 || now - last > CANBOSO_CATALOG_TTL_MS;
   }
 
   async isFxStale(now = Date.now()): Promise<boolean> {
@@ -98,14 +100,18 @@ export class LazyCacheService {
   /**
    * Manual 🔄 refresh: always sync catalog; FX only if TTL expired.
    */
-  async manualCatalogRefresh(): Promise<void> {
-    await canbosoSyncService.syncProductAvailability();
+  async manualCatalogRefresh(): Promise<{ usedCachedCatalog: boolean }> {
+    const usedCachedCatalog = !canFetchCanbosoCatalogFromNetwork();
+    await canbosoSyncService.syncProductAvailability({
+      forceRefresh: !usedCachedCatalog,
+    });
     await this.markCatalogSynced();
 
     if (await this.isFxStale()) {
       await exchangeRateService.forceRefreshUsdRate();
       await this.markFxSynced();
     }
+    return { usedCachedCatalog };
   }
 
   async hydrateFromSettings(): Promise<void> {

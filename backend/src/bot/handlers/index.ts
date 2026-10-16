@@ -76,10 +76,7 @@ import {
   verifyBeforePayment,
 } from "../../services/catalog/prePaymentGuardService";
 import { handlePrePaymentGuardResult } from "../utils/prePaymentFlow";
-import {
-  MANUAL_CATALOG_REFRESH_DEBOUNCE_TOAST,
-  tryBeginManualCatalogRefresh,
-} from "../utils/catalogRefreshDebounce";
+import { MANUAL_CANBOSO_REFRESH_TOAST } from "../../services/suppliers/canboso/canbosoManualRefreshGate";
 import { SupplierRateLimitError } from "../../services/suppliers/SupplierAdapter";
 import { CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE } from "../../services/suppliers/adapters/CanbosoAdapter";
 import { InlineKeyboard } from "grammy";
@@ -782,16 +779,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   });
 
   bot.callbackQuery(/^cat:refresh:(\d+)$/, async (ctx) => {
-    const userId = ctx.from?.id;
-    if (userId != null && !tryBeginManualCatalogRefresh(userId)) {
-      await ctx.answerCallbackQuery({ text: MANUAL_CATALOG_REFRESH_DEBOUNCE_TOAST });
-      return;
-    }
-
     try {
-      await lazyCacheService.manualCatalogRefresh();
+      const { usedCachedCatalog } = await lazyCacheService.manualCatalogRefresh();
       await ctx.answerCallbackQuery({
-        text: "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
+        text: usedCachedCatalog
+          ? MANUAL_CANBOSO_REFRESH_TOAST
+          : "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
       });
     } catch (err) {
       console.warn("[shop refresh] sync failed:", err);
@@ -808,16 +801,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   });
 
   bot.callbackQuery(Callbacks.shopRefresh, async (ctx) => {
-    const userId = ctx.from?.id;
-    if (userId != null && !tryBeginManualCatalogRefresh(userId)) {
-      await ctx.answerCallbackQuery({ text: MANUAL_CATALOG_REFRESH_DEBOUNCE_TOAST });
-      return;
-    }
-
     try {
-      await lazyCacheService.manualCatalogRefresh();
+      const { usedCachedCatalog } = await lazyCacheService.manualCatalogRefresh();
       await ctx.answerCallbackQuery({
-        text: "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
+        text: usedCachedCatalog
+          ? MANUAL_CANBOSO_REFRESH_TOAST
+          : "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
       });
     } catch (err) {
       console.warn("[shop refresh] sync failed:", err);
