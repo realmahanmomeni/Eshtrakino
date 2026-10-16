@@ -1,4 +1,5 @@
 import type { Product } from "@prisma/client";
+import { prisma } from "../../lib/prisma";
 import { lazyCacheService } from "./LazyCacheService";
 import { CANBOSO_SHOP_BLOCKING_STALE_MS } from "../suppliers/canboso/canbosoCatalogTtl";
 import { catalogService } from "./CatalogService";
@@ -48,6 +49,16 @@ export function filterAvailabilityRowsForShop(
 ): ProductAvailabilityRow[] {
   if (showOutOfStock) return rows;
   return rows.filter((r) => !r.outOfStock);
+}
+
+export async function subCategoryHasAnyProduct(subCategoryId: number): Promise<boolean> {
+  const count = await prisma.product.count({ where: { subCategoryId } });
+  return count > 0;
+}
+
+export async function categoryHasAnyProduct(categoryId: number): Promise<boolean> {
+  const count = await prisma.product.count({ where: { categoryId } });
+  return count > 0;
 }
 
 export async function subCategoryHasShopAvailableProduct(subCategoryId: number): Promise<boolean> {

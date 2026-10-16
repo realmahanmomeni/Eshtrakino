@@ -2,11 +2,8 @@ import { createConversation } from "@grammyjs/conversations";
 import { type Bot } from "grammy";
 import type { BotContext } from "../context";
 import { catalogService } from "../../services/catalog/CatalogService";
-import {
-  effectiveStarsUnitToman,
-  isStarsCatalog,
-  starsPricingService,
-} from "../../services/catalog/starsPricingService";
+import { isStarsCatalog } from "../../services/catalog/starsPricingService";
+import { resolveStarsHeaderUnitToman } from "../../services/catalog/starsBrowse";
 import { exchangeRateService } from "../../services/exchangeRateService";
 import {
   invoiceService,
@@ -555,9 +552,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const isStars = isStarsCatalog(subCategory.name) || isStarsCatalog(categoryName);
     let starsRateLine = "";
     if (isStars) {
-      const unitUsdPrice = await starsPricingService.getStarsUnitUsdPrice();
-      const usdRate = await exchangeRateService.getUsdToTomanRate();
-      const oneStarToman = effectiveStarsUnitToman(unitUsdPrice, usdRate);
+      const oneStarToman = await resolveStarsHeaderUnitToman(rawProducts);
       const formattedToman = oneStarToman.toLocaleString("en-US");
       starsRateLine = `⭐️ قیمت هر ۱ عدد استارز امروز: <b>${formattedToman} تومان</b>`;
     }
@@ -709,21 +704,25 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   });
 
   bot.command("cancel", async (ctx) => {
+    await exitAllConversations(ctx);
     await handleCancelInvoice(ctx);
   });
 
   bot.callbackQuery(Callbacks.mainMenu, async (ctx) => {
     await ctx.answerCallbackQuery();
+    await exitAllConversations(ctx);
     await presentCmsPage(ctx, "home", "edit");
   });
 
   bot.callbackQuery(Callbacks.shop, async (ctx) => {
     await ctx.answerCallbackQuery();
+    await exitAllConversations(ctx);
     await presentCmsPage(ctx, "shop", "edit");
   });
 
   bot.callbackQuery(Callbacks.shopRoot, async (ctx) => {
     await ctx.answerCallbackQuery();
+    await exitAllConversations(ctx);
     await presentShopCategories(ctx, 2);
   });
 
@@ -778,6 +777,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
 
   bot.callbackQuery(/^cat:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
+    await exitAllConversations(ctx);
     const categoryId = Number(ctx.match![1]);
     ctx.session.lastCategoryId = categoryId;
     ctx.session.lastShopSubCategoryId = undefined;
@@ -829,6 +829,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
 
   bot.callbackQuery(/^(?:subcat|subcat:view):(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
+    await exitAllConversations(ctx);
     const subCategoryId = Number(ctx.match![1]);
     ctx.session.lastShopSubCategoryId = subCategoryId;
     const sub = await catalogService.getSubCategoryById(subCategoryId);
@@ -1361,20 +1362,16 @@ async function handleCancelInvoice(
       });
     }
   } catch {
-    const msg = [
-      "ℹ️ *لغو ممکن نیست*",
-      "",
-      "فاکتور بازی برای لغو وجود ندارد.",
-    ].join("\n");
+    const msg = "❌ عملیات لغو شد.";
+    const telegramId = ctx.from!.id;
     if (fromCallback && ctx.callbackQuery) {
-      await ctx.answerCallbackQuery({
-        text: "فاکتور بازی برای لغو وجود ندارد",
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: "لغو شد" });
+      await safeEdit(ctx, msg, {
+        reply_markup: menuKb(false, telegramId),
+      }).catch(() => ctx.reply(msg, { reply_markup: menuKb(false, telegramId) }));
     } else {
       await ctx.reply(msg, {
-        parse_mode: "Markdown",
-        reply_markup: menuKb(false, ctx.from.id),
+        reply_markup: menuKb(false, telegramId),
       });
     }
   }

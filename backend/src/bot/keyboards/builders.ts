@@ -170,9 +170,7 @@ function truncateLabel(name: string, max = 40): string {
 }
 
 function extractDurationSuffix(name: string): string | null {
-  const m = name.match(
-    /(?:۱|۲|۳|۴|۵|۶|۷|۸|۹|۰|\d+)\s*(?:ماهه?|ساله?|روزه?)/,
-  );
+  const m = name.match(/[\d۰-۹]{1,4}\s*(?:ماهه?|ساله?|روزه?)/);
   return m ? m[0].replace(/\s+/g, " ").trim() : null;
 }
 
@@ -193,18 +191,16 @@ export function shopProductButtonLabels(
   const labels = new Map<number, string>();
   for (const p of cleaned) {
     let displayName = p.base;
-    if ((counts.get(p.base) ?? 0) > 1) {
-      const duration = extractDurationSuffix(p.base);
-      if (duration && !displayName.includes(duration)) {
-        displayName = `${displayName} ${duration}`;
-      } else if (!p.price) {
-        displayName = `${displayName} #${p.id}`;
-      }
+    const duration = extractDurationSuffix(p.base);
+    const sharedPrefix =
+      (counts.get(p.base) ?? 0) > 1 ||
+      /^تلگرام\s+(?:پریمیوم|پریموم|پرمیوم)/i.test(p.base);
+    if (sharedPrefix && duration && !displayName.includes(duration)) {
+      displayName = `${displayName} ${duration}`;
+    } else if ((counts.get(p.base) ?? 0) > 1 && !p.price) {
+      displayName = `${displayName} #${p.id}`;
     }
-    labels.set(
-      p.id,
-      formatShopProductInlineLabel(displayName, p.price),
-    );
+    labels.set(p.id, formatShopProductInlineLabel(displayName, p.price));
   }
   return labels;
 }

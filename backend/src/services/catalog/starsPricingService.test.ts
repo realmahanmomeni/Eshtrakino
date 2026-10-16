@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { effectiveStarsUnitToman } from "./starsPricingService";
+import { effectiveStarsUnitToman, starsPerStarTomanFromPackPrices } from "./starsPricingService";
+
+test("starsPerStarTomanFromPackPrices matches stored 1000-star pack", () => {
+  const rate = 228_500;
+  const perStar = starsPerStarTomanFromPackPrices(
+    [{ name: "1000 استارز", price: 3_912_000, usdPrice: 17.1 }],
+    rate,
+  );
+  assert.equal(perStar, 3912);
+});
 
 test("effectiveStarsUnitToman matches 1000-star pack per-star price", () => {
   const unitUsd = 0.0171;

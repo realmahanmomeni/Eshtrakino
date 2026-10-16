@@ -101,6 +101,74 @@ export function effectiveStarsUnitToman(
   return Math.round(packToman / referenceStarCount);
 }
 
+export type StarsPackPriceRow = {
+  name: string;
+  price: number;
+  usdPrice?: number | null;
+};
+
+/** Per-star Toman derived from stored pack rows (matches button prices after sync). */
+export function starsPerStarTomanFromPackPrices(
+  packs: StarsPackPriceRow[],
+  usdToTomanRate: number,
+): number {
+  let best: { starCount: number; perStar: number } | null = null;
+  for (const pack of packs) {
+    const starCount = extractStarCount(pack.name);
+    if (!starCount || starCount <= 0) continue;
+    const packToman =
+      Number(pack.price) > 0
+        ? Math.round(Number(pack.price))
+        : pack.usdPrice != null && pack.usdPrice > 0
+          ? convertUsdToToman(Number(pack.usdPrice), usdToTomanRate)
+          : 0;
+    if (packToman <= 0) continue;
+    const perStar = Math.round(packToman / starCount);
+    if (!best || starCount >= best.starCount) {
+      best = { starCount, perStar };
+    }
+  }
+  return best?.perStar ?? 0;
+}
+
+/**
+ * Recompute Toman `price` from stored `usdPrice` for Telegram Stars packs (no Canboso).
+ */
+export async function syncStarsPackTomanPrices(): Promise<number> {
+  const usdRate = await exchangeRateService.getUsdToTomanRate();
+  const products = await prisma.product.findMany({
+    where: {
+      usdPrice: { gt: 0 },
+      OR: [
+        { name: { contains: "استارز" } },
+        { name: { contains: "استار" } },
+        { subCategory: { name: { contains: "استارز" } } },
+        { subCategory: { name: { contains: "Stars" } } },
+        { category: { name: { contains: "استارز" } } },
+        { category: { name: { contains: "Stars" } } },
+      ],
+    },
+    select: { id: true, name: true, usdPrice: true, price: true },
+  });
+
+  let updated = 0;
+  for (const p of products) {
+    const starCount = extractStarCount(p.name);
+    if (!starCount) continue;
+    const usd = Number(p.usdPrice);
+    if (!Number.isFinite(usd) || usd <= 0) continue;
+    const newToman = convertUsdToToman(usd, usdRate);
+    if (Math.round(Number(p.price)) !== newToman) {
+      await prisma.product.update({
+        where: { id: p.id },
+        data: { price: newToman },
+      });
+      updated += 1;
+    }
+  }
+  return updated;
+}
+
 export class StarsPricingService {
   /**
    * Retrieves the current base USD rate per 1 Star from SystemSetting.

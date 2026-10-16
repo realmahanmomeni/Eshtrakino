@@ -121,12 +121,20 @@ function hasUnbalancedParens(text: string): boolean {
 
 const TIER_RE = /ultra|super|pro|plus|max|سوپر|پرو|اولترا|magnific|پریمیوم|premium/i;
 
-function isLossyShortening(original: string, short: string): boolean {
+export function isLossyShortening(original: string, short: string): boolean {
   if (hasUnbalancedParens(short)) return true;
   if (TIER_RE.test(original) && !TIER_RE.test(short)) return true;
   const durOrig = extractDurationHint(original);
   const durShort = extractDurationHint(short);
   if (durOrig && !durShort) return true;
+  if (durOrig && durShort && durOrig.length > durShort.length + 2) return true;
+  if (
+    /(?:و\s*(?:[\d۰-۹]+|ده|یازده|دوازده)\s*روز)/i.test(original) &&
+    !/(?:و\s*(?:[\d۰-۹]+|ده|یازده|دوازده)\s*روز)/i.test(short)
+  ) {
+    return true;
+  }
+  if (/[\d۰-۹]+\s*م(?:\s|$)/u.test(short) && !/[\d۰-۹]+\s*ماه/u.test(short)) return true;
   if (/\(\s*[^)]*$/.test(short)) return true;
   return false;
 }

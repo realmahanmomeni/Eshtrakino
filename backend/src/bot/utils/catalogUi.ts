@@ -9,21 +9,19 @@ import {
 } from "../keyboards/builders";
 import { BannerAssets } from "../assets/banners";
 import { safeEditMedia } from "./safeEdit";
-import {
-  effectiveStarsUnitToman,
-  isStarsCatalog,
-  starsPricingService,
-} from "../../services/catalog/starsPricingService";
-import { exchangeRateService } from "../../services/exchangeRateService";
+import { isStarsCatalog } from "../../services/catalog/starsPricingService";
+import { resolveStarsHeaderUnitToman } from "../../services/catalog/starsBrowse";
 import {
   categoryFullyOutOfStock,
   subCategoryFullyOutOfStock,
 } from "../../services/catalog/catalogAvailability";
 import {
+  categoryHasAnyProduct,
   categoryHasShopAvailableProduct,
   ensureShopCatalogFresh,
   filterAvailabilityRowsForShop,
   mapProductsAvailability,
+  subCategoryHasAnyProduct,
   subCategoryHasShopAvailableProduct,
 } from "../../services/catalog/shopAvailability";
 import { emojiForLabel } from "../keyboards/grid";
@@ -67,6 +65,12 @@ export async function presentShopCategories(
     const visible = [];
     for (const c of categories) {
       if (await categoryHasShopAvailableProduct(c.id)) visible.push(c);
+    }
+    categories = visible;
+  } else {
+    const visible = [];
+    for (const c of categories) {
+      if (await categoryHasAnyProduct(c.id)) visible.push(c);
     }
     categories = visible;
   }
@@ -133,6 +137,7 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
     const fullyOos = await subCategoryFullyOutOfStock(s.id);
     const hasAvailable = await subCategoryHasShopAvailableProduct(s.id);
     if (!showOos && !hasAvailable) continue;
+    if (showOos && !(await subCategoryHasAnyProduct(s.id))) continue;
     subCategoriesUi.push({
       id: s.id,
       name: s.name,
@@ -150,9 +155,8 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
   const isStars = isStarsCatalog(category.name);
   let starsRateLine = "";
   if (isStars) {
-    const unitUsdPrice = await starsPricingService.getStarsUnitUsdPrice();
-    const usdRate = await exchangeRateService.getUsdToTomanRate();
-    const oneStarToman = effectiveStarsUnitToman(unitUsdPrice, usdRate);
+    const starProducts = allProducts.filter((p) => isStarsCatalog(p.name));
+    const oneStarToman = await resolveStarsHeaderUnitToman(starProducts);
     starsRateLine = `⭐️ قیمت هر ۱ عدد استارز امروز: <b>${oneStarToman.toLocaleString("en-US")} تومان</b>`;
   }
 
