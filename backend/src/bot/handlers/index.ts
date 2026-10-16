@@ -70,15 +70,20 @@ import {
   buildDescriptionContinuationMessages,
   buildProductDetailPayload,
 } from "../utils/productDetailMessage";
-import { lazyCacheService } from "../../services/catalog/LazyCacheService";
 import {
   verifyBeforeCheckout,
   verifyBeforePayment,
 } from "../../services/catalog/prePaymentGuardService";
 import { handlePrePaymentGuardResult } from "../utils/prePaymentFlow";
-import { MANUAL_CANBOSO_REFRESH_TOAST } from "../../services/suppliers/canboso/canbosoManualRefreshGate";
-import { SupplierRateLimitError } from "../../services/suppliers/SupplierAdapter";
-import { CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE } from "../../services/suppliers/adapters/CanbosoAdapter";
+import {
+  answerShopRefreshCallbackOnce,
+  isBenignShopRerenderError,
+  resolveShopRefreshToast,
+} from "../utils/shopRefreshCallback";
+import {
+  pickShopRefreshRerenderTarget,
+  type ShopRefreshRerenderTarget,
+} from "../utils/shopRefreshRerender";
 import { InlineKeyboard } from "grammy";
 import { adminHomeKeyboardAsync } from "../admin/keyboards";
 
@@ -579,6 +584,49 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     }
   }
 
+  async function rerenderShopBrowseAfterRefresh(
+    ctx: BotContext,
+    target: ShopRefreshRerenderTarget,
+  ): Promise<void> {
+    const render = async (): Promise<void> => {
+      switch (target.kind) {
+        case "subcategory":
+          await showSubCategoryDetail(ctx, target.subCategoryId);
+          return;
+        case "category":
+          await presentCategoryView(ctx, target.categoryId);
+          return;
+        case "root":
+          await presentShopCategories(ctx, 2);
+          return;
+      }
+    };
+
+    try {
+      await render();
+    } catch (err) {
+      if (isBenignShopRerenderError(err)) return;
+      console.warn("[shop refresh] rerender failed:", err);
+      try {
+        await presentShopCategories(ctx, 2);
+      } catch (fallbackErr) {
+        if (!isBenignShopRerenderError(fallbackErr)) {
+          console.warn("[shop refresh] fallback rerender failed:", fallbackErr);
+        }
+      }
+    }
+  }
+
+  async function handleShopPriceStockRefresh(
+    ctx: BotContext,
+    explicitCategoryId?: number,
+  ): Promise<void> {
+    const toast = await resolveShopRefreshToast();
+    await answerShopRefreshCallbackOnce(ctx, toast);
+    const target = pickShopRefreshRerenderTarget(ctx.session, explicitCategoryId);
+    await rerenderShopBrowseAfterRefresh(ctx, target);
+  }
+
   bot.command("start", async (ctx) => {
     await exitAllConversations(ctx);
     const user = await invoiceService.ensureUser(BigInt(ctx.from!.id));
@@ -757,46 +805,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   });
 
   bot.callbackQuery(/^cat:refresh:(\d+)$/, async (ctx) => {
-    try {
-      const { usedCachedCatalog } = await lazyCacheService.manualCatalogRefresh();
-      await ctx.answerCallbackQuery({
-        text: usedCachedCatalog
-          ? MANUAL_CANBOSO_REFRESH_TOAST
-          : "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
-      });
-    } catch (err) {
-      console.warn("[shop refresh] sync failed:", err);
-      const rateLimited =
-        err instanceof SupplierRateLimitError ||
-        (err instanceof Error && err.message.includes(CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE));
-      await ctx.answerCallbackQuery({
-        text: rateLimited ? CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE : "بروزرسانی ناموفق بود",
-        show_alert: rateLimited,
-      });
-    }
     const categoryId = Number(ctx.match![1]);
-    await presentCategoryView(ctx, categoryId);
+    await handleShopPriceStockRefresh(ctx, categoryId);
   });
 
   bot.callbackQuery(Callbacks.shopRefresh, async (ctx) => {
-    try {
-      const { usedCachedCatalog } = await lazyCacheService.manualCatalogRefresh();
-      await ctx.answerCallbackQuery({
-        text: usedCachedCatalog
-          ? MANUAL_CANBOSO_REFRESH_TOAST
-          : "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
-      });
-    } catch (err) {
-      console.warn("[shop refresh] sync failed:", err);
-      const rateLimited =
-        err instanceof SupplierRateLimitError ||
-        (err instanceof Error && err.message.includes(CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE));
-      await ctx.answerCallbackQuery({
-        text: rateLimited ? CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE : "بروزرسانی ناموفق بود",
-        show_alert: rateLimited,
-      });
-    }
-    await presentShopCategories(ctx, 2);
+    await handleShopPriceStockRefresh(ctx);
   });
 
   bot.callbackQuery(/^(?:subcat|subcat:view):(\d+)$/, async (ctx) => {
