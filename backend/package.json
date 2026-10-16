@@ -14,7 +14,7 @@
     "prisma:studio": "prisma studio",
     "db:seed": "node prisma/seed.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/services/suppliers/canboso/*.test.ts src/services/catalog/shortenSupplierProductName.test.ts src/services/catalog/catalogAvailability.test.ts src/services/catalog/starsPricingService.test.ts src/services/catalog/supplierNameSyncGuard.test.ts src/lib/telegramLabel.test.ts src/lib/latinText.test.ts src/bot/keyboards/shopProductButtonLabel.test.ts src/bot/keyboards/shopNavButtonLabel.test.ts src/bot/utils/productDetailMessage.test.ts src/bot/utils/shopSession.test.ts",
+    "test": "tsx --test src/services/suppliers/canboso/*.test.ts src/services/catalog/shortenSupplierProductName.test.ts src/services/catalog/catalogAvailability.test.ts src/services/catalog/starsPricingService.test.ts src/services/catalog/supplierNameSyncGuard.test.ts src/services/catalog/productSearchService.test.ts src/lib/telegramLabel.test.ts src/lib/latinText.test.ts src/bot/keyboards/shopProductButtonLabel.test.ts src/bot/keyboards/shopNavButtonLabel.test.ts src/bot/utils/productDetailMessage.test.ts src/bot/utils/shopSession.test.ts",
     "test:canboso": "node dist/scripts/testCanbosoPurchaseFlow.js"
   },
   "engines": {

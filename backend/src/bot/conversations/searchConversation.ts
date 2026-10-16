@@ -1,6 +1,9 @@
 import type { EshtrakinoConversation, SessionContext } from "../context";
 import { waitText } from "./wait";
-import { searchCatalogProducts } from "../../services/catalog/productSearchService";
+import {
+  searchCatalogProducts,
+  shouldSearchIncludeInactiveProducts,
+} from "../../services/catalog/productSearchService";
 import { isProductOutOfStockById } from "../../services/catalog/catalogAvailability";
 import { searchResultsKeyboard } from "../keyboards/builders";
 import { sanitizeCustomerCatalogText } from "../utils/catalogUi";
@@ -46,8 +49,11 @@ export async function shopSearchConversation(
 
     const productsUi = await conversation.external(async (): Promise<SearchResultUiRow[]> => {
       await ensureShopCatalogFresh();
-      const hits = await searchCatalogProducts(query);
-      const showOos = sessionShowOos && (await hasAnyAdminAccess(telegramId));
+      const isAdmin = await hasAnyAdminAccess(telegramId);
+      const showOos = sessionShowOos && isAdmin;
+      const hits = await searchCatalogProducts(query, {
+        includeInactiveProducts: shouldSearchIncludeInactiveProducts(isAdmin, sessionShowOos),
+      });
       const list: SearchResultUiRow[] = [];
       for (const p of hits) {
         const outOfStock = await isProductOutOfStockById(p.id);

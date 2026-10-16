@@ -70,8 +70,9 @@ export function normalizeDurationPhrases(name: string): string {
   n = n.replace(/\b30\s*روز\b/gi, "۱ ماهه");
   n = n.replace(/\bیک\s*ماه\b/gi, "۱ ماهه");
   n = n.replace(/\bیک\s*سال\b/gi, "۱ ساله");
-  n = n.replace(/\bسه\s*ماه\b/gi, "۳ ماهه");
-  n = n.replace(/\bشش\s*ماه\b/gi, "۶ ماهه");
+  n = n.replace(/(?:^|\s)سه\s*ماهه?(?=\s|$)/gi, " ۳ ماهه");
+  n = n.replace(/(?:^|\s)شش\s*ماهه?(?=\s|$)/gi, " ۶ ماهه");
+  n = n.replace(/(?:^|\s)یک\s*ساله?(?=\s|$)/gi, " ۱ ساله");
   n = n.replace(/\bده\s*روز\b/gi, "۱۰ روزه");
   n = n.replace(/\b90\s*روز\b/gi, "۳ ماهه");
   n = n.replace(/\b365\s*روز\b/gi, "۱ ساله");

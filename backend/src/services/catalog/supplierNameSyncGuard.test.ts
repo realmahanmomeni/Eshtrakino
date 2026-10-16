@@ -49,3 +49,34 @@ test("name sync rejects losing days on Cursor mouse title (#33)", () => {
   });
   assert.equal(safe, null);
 });
+
+test("name sync rejects Netflix typo and glued 1م (#29)", () => {
+  const current = "نتفلیکس تک صفحه ۱ ماه جهانی";
+  const proposed = "تتفلیکس تک صفحه 1م جهانی";
+  assert.equal(
+    sanitizeSupplierNameSyncProposal({ currentName: current, remoteName: current, proposedName: proposed }),
+    null,
+  );
+});
+
+test("name sync rejects dropping Ultra on Cursor (#32)", () => {
+  const current = "Cursor Ultra یک ماه";
+  const proposed = "Cursor Pro یک ماه";
+  assert.equal(
+    sanitizeSupplierNameSyncProposal({
+      currentName: current,
+      remoteName: "Cursor Ultra 1 month",
+      proposedName: proposed,
+    }),
+    null,
+  );
+});
+
+test("name sync rejects dropping سال on Gmail random IP (#60)", () => {
+  const current = "جی‌میل آی‌پی تصادفی ۲ سال";
+  const proposed = "جی‌میل آی‌پی تصادفی ۲";
+  assert.equal(
+    sanitizeSupplierNameSyncProposal({ currentName: current, remoteName: current, proposedName: proposed }),
+    null,
+  );
+});
