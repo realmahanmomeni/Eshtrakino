@@ -114,7 +114,16 @@ export async function getEffectiveTomanFromMargin(product: Product): Promise<num
 export async function fetchLiveSupplierStock(productId: number): Promise<number | null> {
   const mapping = await prisma.supplierProductMapping.findUnique({
     where: { productId },
-    include: { supplier: true, product: { include: { category: true, subCategory: true } } },
+    include: {
+      supplier: true,
+      product: {
+        include: {
+          category: true,
+          subCategory: true,
+          supplierProductMapping: true,
+        },
+      },
+    },
   });
   if (!mapping?.product || isInternalEshtrakinoFulfillment(mapping.product)) {
     return null;
@@ -159,7 +168,16 @@ export async function fetchLiveSupplierStock(productId: number): Promise<number 
 export async function fetchLiveSupplierCostUsd(productId: number): Promise<number | null> {
   const mapping = await prisma.supplierProductMapping.findUnique({
     where: { productId },
-    include: { supplier: true, product: { include: { category: true, subCategory: true } } },
+    include: {
+      supplier: true,
+      product: {
+        include: {
+          category: true,
+          subCategory: true,
+          supplierProductMapping: true,
+        },
+      },
+    },
   });
   if (!mapping?.product || isInternalEshtrakinoFulfillment(mapping.product)) {
     return null;
