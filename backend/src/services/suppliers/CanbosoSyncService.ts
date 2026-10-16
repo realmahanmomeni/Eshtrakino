@@ -26,6 +26,7 @@ import {
 import { supplierPendingImportService } from "./SupplierPendingImportService";
 import { SupplierManager } from "./SupplierManager";
 import { sanitizeCustomerCatalogText } from "../../bot/utils/catalogUi";
+import { resolveAutomaticLocalProductName } from "./canboso/supplierProductNameOverrides";
 
 export const CANBOSO_SUPPLIER_NAME = "Canboso";
 
@@ -244,6 +245,7 @@ export class CanbosoSyncService {
         mapping.product,
         remote,
         usdRate,
+        mapping.supplierProductKey,
       );
     }
 
@@ -295,6 +297,7 @@ export class CanbosoSyncService {
     },
     remote: CanbosoCatalogProduct,
     usdRate: number,
+    supplierProductKey: string,
   ): Promise<number> {
     let changes = 0;
     const shouldBeActive = remote.stock > 0 && remote.isAvailable;
@@ -328,11 +331,15 @@ export class CanbosoSyncService {
       changes += 1;
     }
 
-    const polishedName = polishCustomerProductTitle(remote.brandName ?? remote.name);
-    if (polishedName && polishedName !== product.name) {
+    const syncedName = resolveAutomaticLocalProductName(
+      supplierProductKey,
+      remote.brandName ?? remote.name,
+      polishCustomerProductTitle,
+    );
+    if (syncedName && syncedName !== product.name) {
       await prisma.product.update({
         where: { id: productId },
-        data: { name: polishedName },
+        data: { name: syncedName },
       });
       changes += 1;
     }
@@ -369,7 +376,7 @@ export class CanbosoSyncService {
 
     await assignProductToShopHierarchy(
       productId,
-      polishedName || remote.brandName || product.name,
+      syncedName || remote.brandName || product.name,
     );
 
     return changes;
@@ -440,6 +447,7 @@ export class CanbosoSyncService {
           existingByName,
           remote,
           usdRate,
+          supplierProductKey,
         );
         continue;
       }

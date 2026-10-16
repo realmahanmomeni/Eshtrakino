@@ -7,6 +7,7 @@ import {
 } from "../catalog/supplierNameSyncGuard";
 import { canbosoAdapter, type CanbosoCatalogProduct } from "./adapters/CanbosoAdapter";
 import { CANBOSO_SUPPLIER_NAME, CanbosoSyncService } from "./CanbosoSyncService";
+import { hasSupplierProductNameOverride } from "./canboso/supplierProductNameOverrides";
 
 export type SupplierNameSyncProposal = {
   productId: number;
@@ -87,6 +88,11 @@ export async function buildSupplierNameSyncProposals(): Promise<SupplierNameSync
     );
     if (!remote) continue;
 
+    if (hasSupplierProductNameOverride(m.supplierProductKey)) {
+      unchangedCount += 1;
+      continue;
+    }
+
     const rawProposed = shortenSupplierProductName(remote.name, {
       brandName: remote.brandName,
       keepWarranty: true,
@@ -133,6 +139,8 @@ export async function applySupplierNameSyncProposals(
 ): Promise<number> {
   let updated = 0;
   for (const p of proposals) {
+    if (hasSupplierProductNameOverride(p.supplierProductKey)) continue;
+
     const product = await prisma.product.findUnique({
       where: { id: p.productId },
       include: { category: true, subCategory: true },
