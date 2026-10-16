@@ -89,7 +89,7 @@ export function buildProductDetailPayload(input: {
   const footerLines = ["", "👇 برای ادامه، دکمه خرید را بزنید:"];
   const header = headerLines.join("\n");
   const footer = footerLines.join("\n");
-  const maxCaptionLen = input.maxCaptionLen ?? TELEGRAM_PHOTO_CAPTION_MAX;
+  const maxCaptionLen = input.maxCaptionLen ?? TELEGRAM_TEXT_MESSAGE_MAX;
   const descBudget = Math.max(
     120,
     maxCaptionLen - header.length - footer.length - 16,

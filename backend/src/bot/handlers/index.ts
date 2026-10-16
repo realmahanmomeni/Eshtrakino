@@ -29,7 +29,6 @@ import { Callbacks } from "../keyboards/callbacks";
 import { deliveryTypeLabel, emojiForLabel } from "../keyboards/grid";
 import { isAdminTelegramId } from "../../config/env";
 import { formatToman } from "../../lib/money";
-import { BannerAssets } from "../assets/banners";
 import { fulfillmentService } from "../../services/fulfillment/FulfillmentService";
 import { walletService, InsufficientBalanceError } from "../../services/wallet/WalletService";
 import {
@@ -44,7 +43,7 @@ import { applyDiscountConversation } from "../conversations/discountConversation
 import { shopSearchConversation } from "../conversations/searchConversation";
 import { registerUserHandlers } from "../user/handlers";
 import { registerSwapHandlers } from "../user/swapHandlers";
-import { safeEdit, safeEditMedia, safeDeleteMessage } from "../utils/safeEdit";
+import { safeEdit, safeDeleteMessage, safePresentShopText } from "../utils/safeEdit";
 import { customerCallbackErrorMiddleware, logHandlerError } from "../utils/customerErrors";
 import { exitAllConversations } from "../utils/conversations";
 import { presentCmsPage } from "../cms/presentPage";
@@ -343,19 +342,19 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const product = await catalogService.getProduct(productId, false);
 
     if (!product) {
+      const invalidMsg = [
+        "⚠️ *محصول نامعتبر*",
+        "",
+        "این محصول یافت نشد یا غیرفعال است.",
+      ].join("\n");
+      const invalidKb = categoriesKeyboard(await catalogService.listActiveCategories());
       if (!forceReply && ctx.callbackQuery) {
-        await safeEditMedia(
-          ctx,
-          BannerAssets.shop,
-          [
-            "⚠️ *محصول نامعتبر*",
-            "",
-            "این محصول یافت نشد یا غیرفعال است.",
-          ].join("\n"),
-          categoriesKeyboard(await catalogService.listActiveCategories()),
-        );
+        await safePresentShopText(ctx, invalidMsg, {
+          parse_mode: "Markdown",
+          reply_markup: invalidKb,
+        });
       } else {
-        await ctx.reply("⚠️ این محصول یافت نشد یا غیرفعال است.");
+        await ctx.reply(invalidMsg, { parse_mode: "Markdown", reply_markup: invalidKb });
       }
       return;
     }
@@ -372,14 +371,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       );
       const msg = "❌ *ناموجود*\n\nاین محصول در حال حاضر موجود نیست.";
       if (!forceReply && ctx.callbackQuery) {
-        await safeEditMedia(
-          ctx,
-          product.subCategory?.bannerUrl?.trim() ||
-            product.category?.bannerUrl?.trim() ||
-            BannerAssets.category,
-          msg,
-          backKb,
-        );
+        await safePresentShopText(ctx, msg, {
+          parse_mode: "Markdown",
+          reply_markup: backKb,
+        });
       } else {
         await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: backKb });
       }
@@ -398,12 +393,6 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       effectivePrice,
     });
 
-    const fallbackBanner =
-      product.subCategory?.bannerUrl?.trim() ||
-      product.subCategory?.coverImageUrl?.trim() ||
-      product.category?.bannerUrl?.trim() ||
-      BannerAssets.category;
-    const media = product.bannerFileId?.trim() || fallbackBanner;
     const kb = productDetailKeyboard(
       product.id,
       product.categoryId,
@@ -423,19 +412,12 @@ export function registerHandlers(bot: Bot<BotContext>): void {
 
     try {
       if (!forceReply && ctx.callbackQuery) {
-        await safeEditMedia(ctx, media, detail.captionHtml, kb, "photo", {
+        await safePresentShopText(ctx, detail.captionHtml, {
           parse_mode: detail.parseMode,
+          reply_markup: kb,
         });
       } else {
-        try {
-          await ctx.replyWithPhoto(media, {
-            caption: detail.captionHtml,
-            parse_mode: detail.parseMode,
-            reply_markup: kb,
-          });
-        } catch {
-          await sendFallbackText();
-        }
+        await sendFallbackText();
       }
     } catch (err) {
       console.error("[showProductDetail] send failed:", err);
@@ -520,7 +502,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         adminOutOfStockToggle: isAdmin ? { showing: showOos } : undefined,
       });
       if (!forceReply && ctx.callbackQuery) {
-        await safeEditMedia(ctx, BannerAssets.category, msg, backKb);
+        await safePresentShopText(ctx, msg, {
+          parse_mode: "Markdown",
+          reply_markup: backKb,
+        });
       } else {
         await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: backKb });
       }
@@ -541,12 +526,6 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       }),
     );
     const planProducts = filterAvailabilityRowsForShop(planProductsAll, showOos);
-
-    const subBanner =
-      subCategory.bannerUrl?.trim() ||
-      subCategory.coverImageUrl?.trim() ||
-      category?.bannerUrl?.trim() ||
-      BannerAssets.category;
 
     const desc = subCategory.description?.trim();
     const isStars = isStarsCatalog(subCategory.name) || isStarsCatalog(categoryName);
@@ -588,18 +567,11 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const parse_mode = isStars ? "HTML" : "Markdown";
 
     if (!forceReply && ctx.callbackQuery) {
-      await safeEditMedia(ctx, subBanner, caption, kb, "photo", { parse_mode });
+      await safePresentShopText(ctx, caption, {
+        parse_mode,
+        reply_markup: kb,
+      });
     } else {
-      try {
-        await ctx.replyWithPhoto(subBanner, {
-          caption,
-          parse_mode,
-          reply_markup: kb,
-        });
-        return;
-      } catch {
-        /* fallback to text */
-      }
       await ctx.reply(caption, {
         parse_mode,
         reply_markup: kb,

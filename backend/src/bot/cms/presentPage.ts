@@ -28,7 +28,12 @@ import {
   SWAPPAY_ENABLED,
 } from "../../services/settings/SettingsService";
 import { injectAdminControls } from "./injectAdminControls";
-import { safeEditMedia, safeDeleteMessage } from "../utils/safeEdit";
+import {
+  clipShopMessageText,
+  safeEditMedia,
+  safeDeleteMessage,
+  safePresentShopText,
+} from "../utils/safeEdit";
 import { panelFromCtx } from "../conversations/wait";
 import { lazyCacheService } from "../../services/catalog/LazyCacheService";
 
@@ -69,9 +74,30 @@ function detectMessageMediaKind(
   return "unknown";
 }
 
-function defaultFallbackPhoto(pageKey: PageKey): string {
-  if (pageKey === "shop") return BannerAssets.shop;
+function defaultFallbackPhoto(_pageKey: PageKey): string {
   return BannerAssets.welcome;
+}
+
+/** Shop CMS screen: plain text only (no category/shop banner). */
+async function deliverShopTextPage(
+  ctx: SessionContext,
+  mode: PresentMode,
+  caption: string,
+  reply_markup: InlineKeyboard,
+): Promise<void> {
+  const text = clipShopMessageText(caption);
+  if (mode === "reply") {
+    const sent = await ctx.reply(text, {
+      parse_mode: "Markdown",
+      reply_markup,
+    });
+    await rememberPanel(ctx, sent.chat.id, sent.message_id);
+    return;
+  }
+  await safePresentShopText(ctx, text, {
+    parse_mode: "Markdown",
+    reply_markup,
+  });
 }
 
 async function rememberPanel(ctx: SessionContext, chatId: number, messageId: number): Promise<void> {
@@ -311,7 +337,7 @@ export async function presentCmsPage(
         "shop",
       );
     }
-    await deliverCmsMessage(ctx, mode, pageKey, page, caption, kb);
+    await deliverShopTextPage(ctx, mode, caption, kb);
     return;
   }
 
