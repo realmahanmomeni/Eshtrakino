@@ -18,6 +18,7 @@ import {
 import { withOutOfStockPrefix } from "../../services/catalog/catalogAvailability";
 import { truncateInlineButtonLabel } from "../../lib/telegramLabel";
 import { formatShopProductInlineLabel } from "./shopProductButtonLabel";
+import { formatShopNavButtonLabel } from "./shopNavButtonLabel";
 
 /**
  * Layout order (top → bottom):
@@ -86,9 +87,9 @@ export function categoriesKeyboard(
   const kb = new InlineKeyboard();
   const buttons: KeyboardButton[] = categories.map((c) => {
     const fullyOos = options?.outOfStockByCategoryId?.get(c.id) ?? false;
-    const label = withOutOfStockPrefix(c.name, fullyOos);
+    const label = withOutOfStockPrefix(formatShopNavButtonLabel(c.name), fullyOos);
     return {
-      text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
+      text: label.length > 64 ? truncateInlineButtonLabel(label, 64) : label,
       data: Callbacks.category(c.id),
       icon_custom_emoji_id: getCategoryCustomEmojiId(c.name),
     };
@@ -99,7 +100,7 @@ export function categoriesKeyboard(
     appendOneColumn(kb, buttons);
   }
   appendNavBar(kb, {
-    text: "بازگشت",
+    text: "🔙 بازگشت",
     data: Callbacks.mainMenu,
     icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
   });
@@ -119,9 +120,9 @@ export function shopRootMenuKeyboard(
   const kb = new InlineKeyboard();
   const buttons: KeyboardButton[] = categories.map((c) => {
     const fullyOos = options?.outOfStockByCategoryId?.get(c.id) ?? false;
-    const label = withOutOfStockPrefix(c.name, fullyOos);
+    const label = withOutOfStockPrefix(formatShopNavButtonLabel(c.name), fullyOos);
     return {
-      text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
+      text: label.length > 64 ? truncateInlineButtonLabel(label, 64) : label,
       data: Callbacks.category(c.id),
       icon_custom_emoji_id: getCategoryCustomEmojiId(c.name),
     };
@@ -241,10 +242,10 @@ export function categoryContentsKeyboard(
 
   if (subCategories.length > 0) {
     const subCatButtons: KeyboardButton[] = subCategories.map((s) => {
-      const namePart = truncateLabel(cleanProductLabel(s.name), 35);
+      const namePart = formatShopNavButtonLabel(cleanProductLabel(s.name));
       const label = withOutOfStockPrefix(namePart, Boolean(s.outOfStock));
       return {
-        text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
+        text: label.length > 64 ? truncateInlineButtonLabel(label, 64) : label,
         data: Callbacks.subCategoryView(s.id),
         icon_custom_emoji_id: getSubCategoryCustomEmojiId(s.name),
       };
@@ -298,7 +299,7 @@ export function categoryContentsKeyboard(
     );
   }
   appendNavBar(kb, {
-    text: "بازگشت",
+    text: "🔙 بازگشت",
     data: Callbacks.shop,
     icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
   });
@@ -343,9 +344,8 @@ export function servicePlansKeyboard(
   if (subCategoryId != null) {
     kb.row().text("🔄 بروزرسانی قیمت و موجودی", Callbacks.categoryRefresh(categoryId));
   }
-  const backLabel = categoryName ? `بازگشت به ${categoryName}` : "بازگشت";
   appendNavBar(kb, {
-    text: backLabel.length > 64 ? `${backLabel.slice(0, 61)}…` : backLabel,
+    text: "🔙 بازگشت",
     data: Callbacks.category(categoryId),
     icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
   });
@@ -380,13 +380,13 @@ export function productDetailKeyboard(
   }
   if (subCategoryId != null) {
     appendNavBar(kb, {
-      text: "بازگشت",
+      text: "🔙 بازگشت",
       data: Callbacks.subCategoryView(subCategoryId),
       icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
     });
   } else {
     appendNavBar(kb, {
-      text: "بازگشت به لیست",
+      text: "🔙 بازگشت",
       data: Callbacks.category(categoryId),
       icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
     });
@@ -409,7 +409,7 @@ export function chooseDeliveryPreferenceKeyboard(productId: number): InlineKeybo
     BUTTON_CUSTOM_EMOJIS.EMAIL_DELIVERY,
   );
   appendNavBar(kb, {
-    text: "بازگشت",
+    text: "🔙 بازگشت",
     data: Callbacks.viewProduct(productId),
     icon_custom_emoji_id: BUTTON_CUSTOM_EMOJIS.BACK,
   });

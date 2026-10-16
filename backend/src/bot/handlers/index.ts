@@ -2,7 +2,11 @@ import { createConversation } from "@grammyjs/conversations";
 import { type Bot } from "grammy";
 import type { BotContext } from "../context";
 import { catalogService } from "../../services/catalog/CatalogService";
-import { starsPricingService, isStarsCatalog } from "../../services/catalog/starsPricingService";
+import {
+  effectiveStarsUnitToman,
+  isStarsCatalog,
+  starsPricingService,
+} from "../../services/catalog/starsPricingService";
 import { exchangeRateService } from "../../services/exchangeRateService";
 import {
   invoiceService,
@@ -515,7 +519,9 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         "",
         "فعلاً محصول قابل خریدی در این سرویس موجود نیست.",
       ].join("\n");
-      const backKb = servicePlansKeyboard([], subCategory.categoryId, categoryName, subCategoryId);
+      const backKb = servicePlansKeyboard([], subCategory.categoryId, categoryName, subCategoryId, {
+        adminOutOfStockToggle: isAdmin ? { showing: showOos } : undefined,
+      });
       if (!forceReply && ctx.callbackQuery) {
         await safeEditMedia(ctx, BannerAssets.category, msg, backKb);
       } else {
@@ -551,7 +557,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     if (isStars) {
       const unitUsdPrice = await starsPricingService.getStarsUnitUsdPrice();
       const usdRate = await exchangeRateService.getUsdToTomanRate();
-      const oneStarToman = Math.round(unitUsdPrice * usdRate);
+      const oneStarToman = effectiveStarsUnitToman(unitUsdPrice, usdRate);
       const formattedToman = oneStarToman.toLocaleString("en-US");
       starsRateLine = `⭐️ قیمت هر ۱ عدد استارز امروز: <b>${formattedToman} تومان</b>`;
     }

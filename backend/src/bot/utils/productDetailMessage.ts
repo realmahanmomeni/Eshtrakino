@@ -38,18 +38,25 @@ export function truncateCatalogText(text: string, maxLen: number): { text: strin
   return { text: `${head}…`, truncated: true };
 }
 
+function trimContinuationStart(text: string): string {
+  return text
+    .replace(/^[\s.\u060C\u066C…\u2026]+/u, "")
+    .replace(/^\n+/u, "")
+    .trimStart();
+}
+
 export function splitDescriptionIntoChunks(
   description: string,
   chunkSize = TELEGRAM_TEXT_MESSAGE_MAX - 80,
 ): string[] {
   const chunks: string[] = [];
-  let rest = description.trim();
+  let rest = trimContinuationStart(description.trim());
   while (rest.length > 0) {
     const { text, truncated } = truncateCatalogText(rest, chunkSize);
     chunks.push(text);
     if (!truncated) break;
     const consumed = text.endsWith("…") ? text.slice(0, -1).length : text.length;
-    rest = rest.slice(consumed).trimStart();
+    rest = trimContinuationStart(rest.slice(consumed));
   }
   return chunks.length > 0 ? chunks : [""];
 }
@@ -91,7 +98,7 @@ export function buildProductDetailPayload(input: {
   const captionHtml = [header, escapeHtml(descPart), footer].join("\n");
   const shownPlain = truncated && descPart.endsWith("…") ? descPart.slice(0, -1) : descPart;
   const descriptionRemainder = truncated
-    ? safeDescription.slice(shownPlain.length).trimStart()
+    ? trimContinuationStart(safeDescription.slice(shownPlain.length))
     : "";
 
   return {

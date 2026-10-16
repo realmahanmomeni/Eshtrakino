@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { isStarsCatalog } from "./starsPricingService";
+import { isTelegramServicesCategory } from "./catalogAvailability";
 import { isAutomaticHierarchyBlocked } from "./catalogHierarchyGuard";
 
 export type BrandRule = {
@@ -139,7 +140,7 @@ export const SHOP_TAXONOMY: CategoryTaxonomy[] = [
     brands: [
       { subCategoryName: "Duolingo | دولینگو", pattern: /duolingo|دولینگو/i },
       { subCategoryName: "Udemy | یودمی", pattern: /udemy|یودمی/i },
-      { subCategoryName: "Coursera | کورsera", pattern: /coursera|کورsera/i },
+      { subCategoryName: "Coursera | کورسرا", pattern: /coursera|کورسرا|کورsera/i },
       { subCategoryName: "Grammarly | گرامرلی", pattern: /grammarly|گرامرلی/i },
       { subCategoryName: "QuillBot | کوییل‌بات", pattern: /quillbot|کوییل.?بات/i },
       {
@@ -178,6 +179,7 @@ export const CORRUPTED_SUBCATEGORY_NAMES = new Set([
   "پیست",
   "طرح",
   "کورsera",
+  "کورسرا",
   "ChatGPT",
   "Gemini",
   "Grok",
@@ -237,7 +239,7 @@ export function resolveTelegramBrand(productName: string): BrandRule | null {
       pattern: /stars/i,
     };
   }
-  if (/premium|پریمیوم|پرمیوم/i.test(productName)) {
+  if (/premium|پریمیوم|پرمیوم|پریموم/i.test(productName)) {
     return {
       subCategoryName: "Telegram Premium | پریمیوم تلگرام",
       pattern: /premium/i,
@@ -323,7 +325,11 @@ export async function assignProductToShopHierarchy(
 ): Promise<{ categoryId: number; subCategoryId: number } | null> {
   const product = await prisma.product.findUnique({
     where: { id: productId },
-    include: { category: true, subCategory: true },
+    include: {
+      category: true,
+      subCategory: true,
+      supplierProductMapping: true,
+    },
   });
   if (!product) return null;
 
@@ -344,17 +350,29 @@ export async function assignProductToShopHierarchy(
     },
   });
 
-  if (telegramCat && product.categoryId === telegramCat.id) {
+  const inTelegramServices =
+    (telegramCat && product.categoryId === telegramCat.id) ||
+    isTelegramServicesCategory(product.category, product.subCategory);
+
+  if (inTelegramServices) {
+    if (product.supplierProductMapping) {
+      return {
+        categoryId: product.categoryId,
+        subCategoryId: product.subCategoryId ?? 0,
+      };
+    }
+
     const tgBrand = resolveTelegramBrand(productName);
     if (tgBrand) {
-      const sub = await ensureSubCategoryForBrand(telegramCat.id, tgBrand.subCategoryName);
-      if (product.subCategoryId !== sub.id || product.categoryId !== telegramCat.id) {
+      const categoryId = telegramCat?.id ?? product.categoryId;
+      const sub = await ensureSubCategoryForBrand(categoryId, tgBrand.subCategoryName);
+      if (product.subCategoryId !== sub.id || product.categoryId !== categoryId) {
         await prisma.product.update({
           where: { id: productId },
-          data: { categoryId: telegramCat.id, subCategoryId: sub.id },
+          data: { categoryId, subCategoryId: sub.id },
         });
       }
-      return { categoryId: telegramCat.id, subCategoryId: sub.id };
+      return { categoryId, subCategoryId: sub.id };
     }
     const { findHardReassignRule, applyHardReassignRule } = await import(
       "./productOtherMigration.js"

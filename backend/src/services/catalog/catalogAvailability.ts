@@ -22,7 +22,7 @@ export function isTelegramServicesCategory(
 }
 
 function isTelegramPremiumProductName(name: string): boolean {
-  return /premium|پریمیوم|پرمیوم/i.test(name);
+  return /premium|پریمیوم|پرمیوم|پریموم/i.test(name);
 }
 
 /**

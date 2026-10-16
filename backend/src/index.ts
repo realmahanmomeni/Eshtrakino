@@ -15,6 +15,7 @@ import { prisma } from "./lib/prisma";
 import { groupLogger } from "./services/logger/GroupLogger";
 import { backupService } from "./services/backup/BackupService";
 import { bootstrapCatalog } from "./services/catalog/bootstrapCatalog";
+import { runIdempotentCatalogDataFixes } from "./services/catalog/catalogDataFixes";
 import { exitAllConversations } from "./bot/utils/conversations";
 import { ensureWhiteLabelCatalog } from "./services/catalog/whiteLabelCatalog";
 import {
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
 
   // Ensure initial catalog integrity (Inspect-Before-Create)
   await bootstrapCatalog();
+  await runIdempotentCatalogDataFixes();
 
   try {
     const marginDefault = await settingsService.getSetting(DEFAULT_PROFIT_MARGIN_PERCENT_KEY);

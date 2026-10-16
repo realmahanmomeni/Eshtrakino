@@ -1,8 +1,8 @@
 import {
   isolateEmbeddedLatin,
-  normalizeArabicToPersianChars,
   truncateInlineButtonLabel,
 } from "../../lib/telegramLabel";
+import { normalizeArabicToPersianCharsPreservingLatin } from "../../lib/latinText";
 import { normalizeDurationPhrases, stripTitleGarbage } from "./productTitlePolish";
 
 const EMOJI_RE = /\p{Extended_Pictographic}/gu;
@@ -20,8 +20,12 @@ function extractDurationHint(text: string): string | null {
   const normalized = normalizeDurationPhrases(text);
   const m =
     normalized.match(
-      /(?:۱|۲|۳|۴|۵|۶|۷|۸|۹|۰|\d+)\s*(?:ماهه?|ساله?|روزه?|ماه|سال|روز)/,
-    ) ?? normalized.match(/\b\d+\s*(?:mo|month|yr|year|day)s?\b/i);
+      /[\d۰-۹]{1,4}\s*(?:ماهه?|ساله?|روزه?|ماه|سال|روز)/,
+    ) ??
+    normalized.match(
+      /(?:یک|دو|سه|چهار|پنج|شش|هفت|ده|یازده|دوازده)\s*(?:ماهه?|ساله?|روزه?|ماه|سال|روز)/,
+    ) ??
+    normalized.match(/\b\d+\s*(?:mo|month|yr|year|day)s?\b/i);
   return m ? m[0].replace(/\s+/g, " ").trim() : null;
 }
 
@@ -42,26 +46,38 @@ function extractQuantityHint(text: string): string | null {
   return null;
 }
 
-function detectLatinBrand(blob: string): string | null {
-  const patterns: Array<[RegExp, string]> = [
-    [/freepik(?:\s*\(\s*magnific\s*\))?/i, "FreePik"],
-    [/muse\s*ai/i, "Muse AI"],
-    [/quilbot/i, "Quilbot"],
-    [/cursor(?:\s*pro)?/i, "Cursor"],
-    [/runway(?:\s*max)?/i, "Runway"],
+function extractPlanTier(blob: string): string | null {
+  const tiers: Array<[RegExp, string]> = [
+    [/\bultra\b/i, "Ultra"],
+    [/\bsuper\b|سوپر/i, "Super"],
+    [/\bpro\s*max\b/i, "Pro Max"],
+    [/\bpro\b/i, "Pro"],
+    [/\bplus\b/i, "Plus"],
+    [/\bmax\b/i, "Max"],
+    [/magnific/i, "magnific"],
+    [/پریمیوم|premium/i, "پریمیوم"],
   ];
-  for (const [re, label] of patterns) {
+  for (const [re, label] of tiers) {
     if (re.test(blob)) return label;
   }
   return null;
 }
 
-function planKeyword(blob: string): string | null {
-  if (/magnific/i.test(blob)) return "magnific";
-  if (/پریمیوم|premium/i.test(blob)) return "پریمیوم";
-  if (/pro\s*max|max/i.test(blob)) return "Max";
-  if (/\bpro\b/i.test(blob)) return "Pro";
-  if (/plus/i.test(blob)) return "Plus";
+function detectLatinBrand(blob: string): string | null {
+  const patterns: Array<[RegExp, string]> = [
+    [/freepik(?:\s*\(\s*magnific\s*\))?/i, "FreePik"],
+    [/muse\s*ai/i, "Muse AI"],
+    [/quilbot/i, "Quilbot"],
+    [/cursor/i, "Cursor"],
+    [/runway(?:\s*max)?/i, "Runway"],
+    [/\bgrok\b/i, "GROK"],
+    [/adobe|ادوبی/i, "Adobe"],
+    [/express|اکسپرس/i, "Express"],
+    [/coursera/i, "Coursera"],
+  ];
+  for (const [re, label] of patterns) {
+    if (re.test(blob)) return label;
+  }
   return null;
 }
 
@@ -90,7 +106,29 @@ function brandPrefixFromName(brandName: string | null | undefined): string | nul
   if (!brand || brand.length < 2) return null;
   const beforeSep = brand.split(/[|—–\-]/)[0]?.trim();
   const core = (beforeSep && beforeSep.length >= 2 ? beforeSep : brand).slice(0, 24);
-  return normalizeArabicToPersianChars(core);
+  return normalizeArabicToPersianCharsPreservingLatin(core);
+}
+
+function hasUnbalancedParens(text: string): boolean {
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === "(" || ch === "（") depth += 1;
+    if (ch === ")" || ch === "）") depth -= 1;
+    if (depth < 0) return true;
+  }
+  return depth !== 0;
+}
+
+const TIER_RE = /ultra|super|pro|plus|max|سوپر|پرو|اولترا|magnific|پریمیوم|premium/i;
+
+function isLossyShortening(original: string, short: string): boolean {
+  if (hasUnbalancedParens(short)) return true;
+  if (TIER_RE.test(original) && !TIER_RE.test(short)) return true;
+  const durOrig = extractDurationHint(original);
+  const durShort = extractDurationHint(short);
+  if (durOrig && !durShort) return true;
+  if (/\(\s*[^)]*$/.test(short)) return true;
+  return false;
 }
 
 function composeShortName(parts: Array<string | null | undefined>, maxLen: number): string {
@@ -101,6 +139,18 @@ function composeShortName(parts: Array<string | null | undefined>, maxLen: numbe
     .trim();
   const withBidi = isolateEmbeddedLatin(joined);
   return truncateInlineButtonLabel(withBidi, maxLen);
+}
+
+function buildFromParts(
+  rawCleaned: string,
+  parts: Array<string | null | undefined>,
+  maxLen: number,
+): string {
+  const short = composeShortName(parts, maxLen);
+  if (isLossyShortening(rawCleaned, short)) {
+    return composeShortName([rawCleaned], maxLen);
+  }
+  return short;
 }
 
 /**
@@ -117,7 +167,9 @@ export function shortenSupplierProductName(
 
   let blob = stripEmoji(stripTitleGarbage(raw));
   blob = blob.replace(GUARANTEE_PAREN_RE, " ").replace(GUARANTEE_BRACKET_RE, " ");
-  blob = normalizeArabicToPersianChars(normalizeDurationPhrases(blob)).replace(/\s+/g, " ").trim();
+  blob = normalizeArabicToPersianCharsPreservingLatin(normalizeDurationPhrases(blob))
+    .replace(/\s+/g, " ")
+    .trim();
 
   const linkedIn = linkedInShortName(`${options?.brandName ?? ""} ${blob}`);
   if (linkedIn) return composeShortName([linkedIn], maxLen);
@@ -125,29 +177,37 @@ export function shortenSupplierProductName(
   const latinBrand = detectLatinBrand(blob) ?? detectLatinBrand(options?.brandName ?? "");
   const duration = extractDurationHint(blob);
   const quantity = extractQuantityHint(blob);
-  const plan = planKeyword(blob);
+  const plan = extractPlanTier(blob);
+
+  if (/adobe|ادوبی/i.test(blob) && /express|اکسپرس/i.test(blob)) {
+    const persianBrand = /ادوبی/.test(blob) ? "ادوبی اکسپرس" : "Adobe Express";
+    return buildFromParts(blob, [persianBrand, duration], maxLen);
+  }
 
   if (latinBrand) {
+    if (/grok/i.test(latinBrand)) {
+      return buildFromParts(blob, [latinBrand, plan ?? "Super", duration], maxLen);
+    }
     if (/muse\s*ai/i.test(latinBrand) || /muse/i.test(blob)) {
       const qty =
         quantity ??
         (/\b۱\s*میلیارد\b/.test(blob) ? "۱ میلیارد توکن" : null);
-      return composeShortName([latinBrand, qty ?? plan, duration], maxLen);
+      return buildFromParts(blob, [latinBrand, qty ?? plan, duration], maxLen);
     }
     if (/freepik/i.test(latinBrand)) {
-      return composeShortName([latinBrand, plan, quantity, duration], maxLen);
+      return buildFromParts(blob, [latinBrand, plan, quantity, duration], maxLen);
     }
     if (/cursor/i.test(latinBrand)) {
       const cursorQty = quantity ?? (/\b400\b/.test(blob) ? "۴۰۰ اعتبار" : null);
-      return composeShortName([latinBrand, plan, cursorQty, duration], maxLen);
+      return buildFromParts(blob, [latinBrand, plan, cursorQty, duration], maxLen);
     }
     if (/runway/i.test(latinBrand)) {
-      return composeShortName([latinBrand, plan, quantity, duration], maxLen);
+      return buildFromParts(blob, [latinBrand, plan, quantity, duration], maxLen);
     }
     if (/quilbot/i.test(latinBrand)) {
-      return composeShortName([latinBrand, plan ?? "پریمیوم", duration], maxLen);
+      return buildFromParts(blob, [latinBrand, plan ?? "پریمیوم", duration], maxLen);
     }
-    return composeShortName([latinBrand, plan, quantity, duration], maxLen);
+    return buildFromParts(blob, [latinBrand, plan, quantity, duration], maxLen);
   }
 
   const brandPrefix = brandPrefixFromName(options?.brandName);
@@ -156,11 +216,13 @@ export function shortenSupplierProductName(
   if (brandPrefix && !blob.toLowerCase().includes(brandPrefix.toLowerCase().slice(0, 4))) {
     candidate = duration ? `${brandPrefix} ${duration}` : brandPrefix;
   } else if (duration && !blob.includes(duration)) {
-    candidate = `${blob.split(/\s+/).slice(0, 3).join(" ")} ${duration}`.trim();
+    candidate = `${blob.split(/\s+/).slice(0, 4).join(" ")} ${duration}`.trim();
+  } else {
+    candidate = blob;
   }
 
   candidate = candidate.replace(/\s+/g, " ").trim();
   if (!candidate) candidate = raw;
 
-  return composeShortName([candidate], maxLen);
+  return buildFromParts(blob, [candidate], maxLen);
 }

@@ -33,6 +33,7 @@ import {
   adminProductDetailKeyboard,
   adminDeliveryTypeSwitchKeyboard,
   adminSuppliersKeyboard,
+  adminSuppliersKeyboardAsync,
 } from "./keyboards";
 import { renderAdminProductCardText, getDeliveryModeCaption } from "./catalog";
 import { exitAllConversations } from "../utils/conversations";
@@ -396,7 +397,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await safeEdit(
       ctx,
       "🔗 *مدیریت تامین‌کنندگان*\n\nیکی از گزینه‌های زیر را انتخاب کنید:",
-      adminSuppliersKeyboard(),
+      { parse_mode: "Markdown", reply_markup: await adminSuppliersKeyboardAsync() },
     );
   });
 
