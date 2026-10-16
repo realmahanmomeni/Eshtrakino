@@ -48,20 +48,19 @@ test("odd count of short labels leaves last row single", () => {
   );
 });
 
-test("FAM VEO and KLING shop labels are long and plan as separate rows", () => {
+test("FAM VEO and KLING list labels have no price and plan as separate rows", () => {
   const fam = formatShopProductInlineLabel(
     "مدیر کامل FAM VEO 3 x20 اعتبار ۱ ماه گارانتی کامل",
     "29,080,000",
   );
   const kling = formatShopProductInlineLabel("KLING 660-850 کره 1 ماه", "1,897,000");
+  assert.ok(!fam.includes("29,080,000"));
+  assert.ok(!kling.includes("1,897,000"));
   assert.ok(isLongProductButtonLabel(fam));
-  assert.ok(isLongProductButtonLabel(kling));
   const rows = planProductButtonRows([btn(fam, "1"), btn(kling, "2")]);
   assert.equal(rows.length, 2);
   assert.equal(rows[0]!.length, 1);
-  assert.equal(rows[1]!.length, 1);
-  assert.match(rows[0]![0]!.text, /29,080,000/);
-  assert.match(rows[1]![0]!.text, /1,897,000/);
+  assert.equal(rows[0]![0]!.text, fam);
 });
 
 test("appendProductButtonRows lays short pair as one two-column row", () => {

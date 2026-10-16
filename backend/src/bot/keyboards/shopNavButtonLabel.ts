@@ -23,6 +23,40 @@ export function formatShopNavButtonLabel(raw: string, maxVisible = TELEGRAM_INLI
   return truncateInlineButtonLabel(trimmed, maxVisible);
 }
 
+/** Shop product list buttons: title + duration only (no price). */
+export function formatShopProductListButtonLabel(
+  namePart: string,
+  maxVisible = TELEGRAM_INLINE_PRODUCT_LABEL_TARGET,
+  durationPart?: string | null,
+): string {
+  const durationSeg = durationPart?.trim() ? ` ${durationPart.trim()}` : "";
+  const trimmedName = namePart.trim();
+  let combined = `${trimmedName}${durationSeg}`;
+
+  if (combined.length <= maxVisible && combined.length <= 64) {
+    return combined;
+  }
+
+  const minTitleBudget = 12;
+  let nameBudget = Math.max(minTitleBudget, maxVisible - durationSeg.length);
+  let shortName = truncateInlineButtonLabel(trimmedName, nameBudget);
+  combined = `${shortName}${durationSeg}`;
+
+  while (combined.length > 64 && nameBudget > minTitleBudget) {
+    nameBudget -= 2;
+    shortName = truncateInlineButtonLabel(trimmedName, nameBudget);
+    combined = `${shortName}${durationSeg}`;
+  }
+
+  if (combined.length > 64) {
+    shortName = truncateInlineButtonLabel(trimmedName, Math.max(minTitleBudget, 64 - durationSeg.length));
+    combined = `${shortName}${durationSeg}`;
+  }
+
+  return combined.length <= 64 ? combined : `${shortName}${durationSeg}`.slice(0, 64);
+}
+
+/** @deprecated List buttons no longer show price; kept for tests that assert price-suffix formatting elsewhere. */
 export function formatShopProductButtonWithPrice(
   namePart: string,
   formattedPrice?: string,

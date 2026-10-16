@@ -2,7 +2,7 @@ import { isolateEmbeddedLatin } from "../../lib/telegramLabel";
 import { extractStarCount, isStarsCatalog } from "../../services/catalog/starsPricingService";
 import { normalizeDurationPhrases } from "../../services/catalog/productTitlePolish";
 import {
-  formatShopProductButtonWithPrice,
+  formatShopProductListButtonLabel,
   TELEGRAM_INLINE_PRODUCT_LABEL_TARGET,
 } from "./shopNavButtonLabel";
 
@@ -129,11 +129,11 @@ export function buildShopProductDisplayName(rawName: string): string {
 }
 
 /**
- * Render-time shop inline label: [title][duration] · price — duration and price are never dropped.
+ * Render-time shop product list button: title + duration (no price — shown on detail/checkout).
  */
 export function formatShopProductInlineLabel(
   rawName: string,
-  formattedPrice?: string,
+  _formattedPrice?: string,
   options?: { maxNameLen?: number; maxVisible?: number },
 ): string {
   const maxVisible = options?.maxVisible ?? TELEGRAM_INLINE_PRODUCT_LABEL_TARGET;
@@ -144,5 +144,5 @@ export function formatShopProductInlineLabel(
     titlePart = isolateEmbeddedLatin(titlePart);
   }
 
-  return formatShopProductButtonWithPrice(titlePart, formattedPrice, maxVisible, duration);
+  return formatShopProductListButtonLabel(titlePart, maxVisible, duration);
 }
