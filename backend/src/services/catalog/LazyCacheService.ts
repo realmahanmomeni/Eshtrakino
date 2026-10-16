@@ -3,6 +3,7 @@ import { canbosoSyncService } from "../suppliers/CanbosoSyncService";
 import { exchangeRateService, EXCHANGE_RATE_TTL_MS } from "../exchangeRateService";
 import { CANBOSO_CATALOG_TTL_MS } from "../suppliers/canboso/canbosoCatalogTtl";
 import { canFetchCanbosoCatalogFromNetwork } from "../suppliers/canboso/canbosoManualRefreshGate";
+import { syncStarsPackTomanPrices } from "./starsPricingService";
 
 export const LAZY_CACHE_TTL_MS = EXCHANGE_RATE_TTL_MS;
 
@@ -86,6 +87,7 @@ export class LazyCacheService {
     this.fxInflight = (async () => {
       try {
         await exchangeRateService.forceRefreshUsdRate();
+        await syncStarsPackTomanPrices();
         await this.markFxSynced();
       } catch (err) {
         console.warn("[LazyCache] FX refresh failed:", err);
@@ -109,6 +111,7 @@ export class LazyCacheService {
 
     if (await this.isFxStale()) {
       await exchangeRateService.forceRefreshUsdRate();
+      await syncStarsPackTomanPrices();
       await this.markFxSynced();
     }
     return { usedCachedCatalog };

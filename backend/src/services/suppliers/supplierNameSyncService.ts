@@ -1,6 +1,7 @@
 import { prisma } from "../../lib/prisma";
 import { isAutomaticHierarchyBlocked } from "../catalog/catalogHierarchyGuard";
 import { shortenSupplierProductName } from "../catalog/shortenSupplierProductName";
+import { sanitizeSupplierNameSyncProposal } from "../catalog/supplierNameSyncGuard";
 import { canbosoAdapter, type CanbosoCatalogProduct } from "./adapters/CanbosoAdapter";
 import { CANBOSO_SUPPLIER_NAME, CanbosoSyncService } from "./CanbosoSyncService";
 
@@ -75,7 +76,12 @@ export async function buildSupplierNameSyncProposals(): Promise<{
     );
     if (!remote) continue;
 
-    const proposed = shortenSupplierProductName(remote.name, { brandName: remote.brandName });
+    const rawProposed = shortenSupplierProductName(remote.name, { brandName: remote.brandName });
+    const proposed = sanitizeSupplierNameSyncProposal({
+      currentName: product.name,
+      remoteName: remote.name,
+      proposedName: rawProposed,
+    });
     if (!proposed || proposed === product.name) continue;
 
     const dup = await prisma.product.findFirst({

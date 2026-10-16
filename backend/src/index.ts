@@ -16,6 +16,7 @@ import { groupLogger } from "./services/logger/GroupLogger";
 import { backupService } from "./services/backup/BackupService";
 import { bootstrapCatalog } from "./services/catalog/bootstrapCatalog";
 import { runIdempotentCatalogDataFixes } from "./services/catalog/catalogDataFixes";
+import { syncStarsPackTomanPrices } from "./services/catalog/starsPricingService";
 import { exitAllConversations } from "./bot/utils/conversations";
 import { ensureWhiteLabelCatalog } from "./services/catalog/whiteLabelCatalog";
 import {
@@ -99,6 +100,9 @@ async function main(): Promise<void> {
     await ensureWhiteLabelCatalog();
     await lazyCacheService.markCatalogSynced();
     await lazyCacheService.hydrateFromSettings();
+    await syncStarsPackTomanPrices().catch((err) => {
+      console.warn("[StarsPricing] Startup Toman sync skipped:", err);
+    });
     console.log("[CanbosoSync] Startup catalog + supplier sync complete (via ensureWhiteLabelCatalog).");
   } catch (err) {
     console.warn("[CanbosoSync] Startup sync skipped or failed:", err);

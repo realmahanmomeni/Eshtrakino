@@ -293,13 +293,18 @@ export async function ensureShopCategoriesExist(): Promise<void> {
   }
 }
 
+const SUBCATEGORY_LOOKUP_ALIASES: Record<string, string[]> = {
+  "Coursera | کورسرا": ["Coursera", "Coursera | کورسرا", "Coursera | Coursera"],
+};
+
 export async function ensureSubCategoryForBrand(
   categoryId: number,
   brandName: string,
 ): Promise<{ id: number; categoryId: number }> {
   const trimmed = brandName.trim();
+  const aliasNames = SUBCATEGORY_LOOKUP_ALIASES[trimmed] ?? [trimmed];
   let sub = await prisma.subCategory.findFirst({
-    where: { categoryId, name: trimmed },
+    where: { categoryId, name: { in: aliasNames } },
   });
   if (!sub) {
     sub = await prisma.subCategory.create({
