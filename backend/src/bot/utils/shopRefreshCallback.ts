@@ -1,8 +1,9 @@
 import { GrammyError, type Context } from "grammy";
 import { lazyCacheService } from "../../services/catalog/LazyCacheService";
-import { CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE } from "../../services/suppliers/adapters/CanbosoAdapter";
-import { SupplierRateLimitError } from "../../services/suppliers/SupplierAdapter";
-import { MANUAL_CANBOSO_REFRESH_TOAST } from "../../services/suppliers/canboso/canbosoManualRefreshGate";
+import {
+  canFetchCanbosoCatalogFromNetwork,
+  MANUAL_CANBOSO_REFRESH_TOAST,
+} from "../../services/suppliers/canboso/canbosoManualRefreshGate";
 
 export type ShopRefreshToast = {
   text: string;
@@ -30,25 +31,23 @@ export function isBenignShopRerenderError(err: unknown): boolean {
   );
 }
 
-/** Runs manual catalog refresh; does not answer the callback. */
-export async function resolveShopRefreshToast(): Promise<ShopRefreshToast> {
-  try {
-    const { usedCachedCatalog } = await lazyCacheService.manualCatalogRefresh();
-    return {
-      text: usedCachedCatalog
-        ? MANUAL_CANBOSO_REFRESH_TOAST
-        : "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.",
-    };
-  } catch (err) {
-    console.warn("[shop refresh] sync failed:", err);
-    const rateLimited =
-      err instanceof SupplierRateLimitError ||
-      (err instanceof Error && err.message.includes(CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE));
-    return {
-      text: rateLimited ? CANBOSO_RATE_LIMIT_COOLDOWN_MESSAGE : "بروزرسانی ناموفق بود",
-      show_alert: rateLimited,
-    };
+const SHOP_REFRESH_SUCCESS_TOAST = "✅ موجودی و قیمت‌های دلاری به‌روزرسانی شد.";
+const SHOP_REFRESH_FALLBACK_TOAST = "🔄 بروزرسانی انجام شد.";
+
+/**
+ * Toast text from the 60s Canboso gate only (sync-safe to show before network work).
+ * Call answerCallbackQuery immediately after this — before manualCatalogRefresh().
+ */
+export function peekShopRefreshToast(now = Date.now()): ShopRefreshToast {
+  if (!canFetchCanbosoCatalogFromNetwork(now)) {
+    return { text: MANUAL_CANBOSO_REFRESH_TOAST };
   }
+  return { text: SHOP_REFRESH_SUCCESS_TOAST };
+}
+
+/** Runs manual catalog refresh after the callback was answered. */
+export async function runShopManualCatalogRefresh(): Promise<void> {
+  await lazyCacheService.manualCatalogRefresh();
 }
 
 /** Answer the callback query at most once; never throw to the handler. */
@@ -56,9 +55,10 @@ export async function answerShopRefreshCallbackOnce(
   ctx: Context,
   toast: ShopRefreshToast,
 ): Promise<void> {
+  const text = toast.text?.trim() || SHOP_REFRESH_FALLBACK_TOAST;
   try {
     await ctx.answerCallbackQuery({
-      text: toast.text,
+      text,
       show_alert: toast.show_alert,
     });
   } catch (err) {

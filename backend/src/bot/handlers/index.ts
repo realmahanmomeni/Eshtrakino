@@ -80,7 +80,8 @@ import { handlePrePaymentGuardResult } from "../utils/prePaymentFlow";
 import {
   answerShopRefreshCallbackOnce,
   isBenignShopRerenderError,
-  resolveShopRefreshToast,
+  peekShopRefreshToast,
+  runShopManualCatalogRefresh,
 } from "../utils/shopRefreshCallback";
 import {
   pickShopRefreshRerenderTarget,
@@ -600,14 +601,11 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   ): Promise<void> {
     const render = async (): Promise<void> => {
       switch (target.kind) {
-        case "subcategory":
-          await showSubCategoryDetail(ctx, target.subCategoryId);
-          return;
         case "category":
           await presentCategoryView(ctx, target.categoryId);
           return;
         case "root":
-          await presentShopCategories(ctx, 2);
+          await presentCmsPage(ctx, "shop", "edit");
           return;
       }
     };
@@ -618,7 +616,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       if (isBenignShopRerenderError(err)) return;
       console.warn("[shop refresh] rerender failed:", err);
       try {
-        await presentShopCategories(ctx, 2);
+        await presentCmsPage(ctx, "shop", "edit");
       } catch (fallbackErr) {
         if (!isBenignShopRerenderError(fallbackErr)) {
           console.warn("[shop refresh] fallback rerender failed:", fallbackErr);
@@ -631,9 +629,14 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     ctx: BotContext,
     explicitCategoryId?: number,
   ): Promise<void> {
-    const toast = await resolveShopRefreshToast();
+    const toast = peekShopRefreshToast();
     await answerShopRefreshCallbackOnce(ctx, toast);
-    const target = pickShopRefreshRerenderTarget(ctx.session, explicitCategoryId);
+    try {
+      await runShopManualCatalogRefresh();
+    } catch (err) {
+      console.warn("[shop refresh] sync failed:", err);
+    }
+    const target = pickShopRefreshRerenderTarget(explicitCategoryId);
     await rerenderShopBrowseAfterRefresh(ctx, target);
   }
 
