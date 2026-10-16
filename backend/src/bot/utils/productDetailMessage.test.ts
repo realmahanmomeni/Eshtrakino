@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildProductDetailPayload,
+  productDescriptionContinuationReplyOptions,
   splitDescriptionIntoChunks,
   TELEGRAM_PHOTO_CAPTION_MAX,
   TELEGRAM_TEXT_MESSAGE_MAX,
+  TELEGRAM_DISABLE_LINK_PREVIEW,
   truncateCatalogText,
+  withProductDetailLinkPreviewDisabled,
 } from "./productDetailMessage";
 import { clipShopMessageText, TELEGRAM_SHOP_TEXT_MAX } from "./safeEdit";
 
@@ -17,6 +20,21 @@ test("splitDescriptionIntoChunks skips leading period on continuation", () => {
   const chunks = splitDescriptionIntoChunks(remainder.trim());
   assert.ok(chunks.length > 0);
   assert.ok(!chunks[0]!.startsWith("."));
+});
+
+test("withProductDetailLinkPreviewDisabled merges link preview off for detail send/edit", () => {
+  const merged = withProductDetailLinkPreviewDisabled({
+    parse_mode: "HTML" as const,
+    reply_markup: { inline_keyboard: [] },
+  });
+  assert.deepEqual(merged.link_preview_options, TELEGRAM_DISABLE_LINK_PREVIEW.link_preview_options);
+  assert.equal(merged.parse_mode, "HTML");
+});
+
+test("productDescriptionContinuationReplyOptions disables link preview", () => {
+  const opts = productDescriptionContinuationReplyOptions();
+  assert.equal(opts.parse_mode, "HTML");
+  assert.deepEqual(opts.link_preview_options, { is_disabled: true });
 });
 
 test("buildProductDetailPayload uses 4096 text budget by default", () => {

@@ -7,6 +7,27 @@ import { sanitizeCustomerCatalogText } from "./catalogUi";
 export const TELEGRAM_PHOTO_CAPTION_MAX = 1024;
 export const TELEGRAM_TEXT_MESSAGE_MAX = 4096;
 
+/** Bot API 7+ — disable URL preview cards on product-detail text. */
+export const TELEGRAM_DISABLE_LINK_PREVIEW = {
+  link_preview_options: { is_disabled: true as const },
+} as const;
+
+export function withProductDetailLinkPreviewDisabled<T extends Record<string, unknown>>(
+  extra: T,
+): T & typeof TELEGRAM_DISABLE_LINK_PREVIEW {
+  return { ...extra, ...TELEGRAM_DISABLE_LINK_PREVIEW };
+}
+
+export function productDescriptionContinuationReplyOptions(): {
+  parse_mode: "HTML";
+  link_preview_options: { is_disabled: true };
+} {
+  return {
+    parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
+  };
+}
+
 function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
