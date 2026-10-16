@@ -3,7 +3,7 @@
  * Idempotent — safe to run on every sync.
  */
 
-import { normalizeArabicToPersianChars } from "../../lib/telegramLabel";
+import { normalizeArabicToPersianCharsPreservingLatin, repairCourseraTokenInText } from "../../lib/latinText";
 
 function normalizeKey(input: string): string {
   return input
@@ -68,6 +68,11 @@ export function normalizeDurationPhrases(name: string): string {
   n = n.replace(/\b1\s*y\b/gi, "۱ ساله");
   n = n.replace(/\b7\s*روز\b/gi, "۷ روزه");
   n = n.replace(/\b30\s*روز\b/gi, "۱ ماهه");
+  n = n.replace(/\bیک\s*ماه\b/gi, "۱ ماهه");
+  n = n.replace(/\bیک\s*سال\b/gi, "۱ ساله");
+  n = n.replace(/\bسه\s*ماه\b/gi, "۳ ماهه");
+  n = n.replace(/\bشش\s*ماه\b/gi, "۶ ماهه");
+  n = n.replace(/\bده\s*روز\b/gi, "۱۰ روزه");
   n = n.replace(/\b90\s*روز\b/gi, "۳ ماهه");
   n = n.replace(/\b365\s*روز\b/gi, "۱ ساله");
   return n;
@@ -98,7 +103,8 @@ export function polishCustomerProductTitle(rawName: string): string {
   let name = stripTitleGarbage(trimmed);
   name = applySemanticAliases(name);
   name = normalizeDurationPhrases(name);
-  name = normalizeArabicToPersianChars(name);
+  name = normalizeArabicToPersianCharsPreservingLatin(name);
+  name = repairCourseraTokenInText(name);
   return name.replace(/\s+/g, " ").trim() || trimmed;
 }
 

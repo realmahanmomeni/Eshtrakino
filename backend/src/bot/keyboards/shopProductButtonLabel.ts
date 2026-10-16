@@ -1,11 +1,11 @@
-import {
-  isolateEmbeddedLatin,
-  truncateInlineButtonLabel,
-} from "../../lib/telegramLabel";
+import { isolateEmbeddedLatin } from "../../lib/telegramLabel";
 import { shortenSupplierProductName } from "../../services/catalog/shortenSupplierProductName";
+import {
+  formatShopProductButtonWithPrice,
+  TELEGRAM_INLINE_VISIBLE_MAX,
+} from "./shopNavButtonLabel";
 
 const LONG_NAME_THRESHOLD = 28;
-const TELEGRAM_INLINE_MAX = 64;
 
 function stripPriceFromName(name: string): string {
   return name
@@ -21,14 +21,16 @@ function stripPriceFromName(name: string): string {
 export function formatShopProductInlineLabel(
   rawName: string,
   formattedPrice?: string,
-  options?: { maxNameLen?: number; maxTotalLen?: number },
+  options?: { maxNameLen?: number; maxVisible?: number },
 ): string {
   const maxNameLen = options?.maxNameLen ?? 32;
-  const maxTotalLen = options?.maxTotalLen ?? TELEGRAM_INLINE_MAX;
+  const maxVisible = options?.maxVisible ?? TELEGRAM_INLINE_VISIBLE_MAX;
   const core = stripPriceFromName(
     rawName.replace(/[🎟🎫⭐]/g, "").replace(/^حساب\s+/u, "").trim(),
   );
-  if (!core) return truncateInlineButtonLabel(rawName.trim(), maxTotalLen);
+  if (!core) {
+    return formatShopProductButtonWithPrice(rawName.trim(), formattedPrice, maxVisible);
+  }
 
   const shortCore =
     core.length > LONG_NAME_THRESHOLD
@@ -36,9 +38,5 @@ export function formatShopProductInlineLabel(
       : core;
 
   const namePart = isolateEmbeddedLatin(shortCore);
-  const withPrice = formattedPrice?.trim()
-    ? `${namePart} · ${formattedPrice.trim()}`
-    : namePart;
-
-  return truncateInlineButtonLabel(withPrice, maxTotalLen);
+  return formatShopProductButtonWithPrice(namePart, formattedPrice, maxVisible);
 }

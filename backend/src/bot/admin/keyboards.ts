@@ -800,16 +800,24 @@ export function convPaymentTypeKeyboard(): InlineKeyboard {
     .text("❌ لغو", ConvCb.cancel);
 }
 
-export function adminSuppliersKeyboard(): InlineKeyboard {
+export function adminSuppliersKeyboard(options?: { pendingImportCount?: number }): InlineKeyboard {
   const kb = new InlineKeyboard();
+  const pendingCount = options?.pendingImportCount ?? 0;
   kb.text("➕ افزودن کلید تامین‑کننده (API Key)", "adm:sup:addkey").row();
   kb.text("🔄 تنظیم نگاشت محصولات (Mapping)", "adm:sup:map").row();
-  kb.text("📥 محصولات جدید در انتظار", "adm:sup:pending:from:suppliers").row();
-  kb.text("همگام‌سازی نام‌ها از کنبوسو", "adm:sup:syncnames").row();
+  kb.text(`📥 محصولات جدید (${pendingCount})`, "adm:sup:pending:from:suppliers").row();
+  kb.text("همگام‌سازی نام‌ها از کنبوسo", "adm:sup:syncnames").row();
   appendNavBar(kb, {
-    text: "🔙 بازگشت به پنل",
+    text: "🔙 بازگشت",
     data: Callbacks.adminHome,
   });
   return kb;
+}
+
+export async function adminSuppliersKeyboardAsync(): Promise<InlineKeyboard> {
+  const pendingImportCount = await prisma.supplierPendingImport.count({
+    where: { status: SupplierPendingImportStatus.PENDING },
+  });
+  return adminSuppliersKeyboard({ pendingImportCount });
 }
 

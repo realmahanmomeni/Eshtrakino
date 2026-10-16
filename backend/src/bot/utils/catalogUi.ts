@@ -9,7 +9,11 @@ import {
 } from "../keyboards/builders";
 import { BannerAssets } from "../assets/banners";
 import { safeEditMedia } from "./safeEdit";
-import { isStarsCatalog, starsPricingService } from "../../services/catalog/starsPricingService";
+import {
+  effectiveStarsUnitToman,
+  isStarsCatalog,
+  starsPricingService,
+} from "../../services/catalog/starsPricingService";
 import { exchangeRateService } from "../../services/exchangeRateService";
 import {
   categoryFullyOutOfStock,
@@ -148,7 +152,7 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
   if (isStars) {
     const unitUsdPrice = await starsPricingService.getStarsUnitUsdPrice();
     const usdRate = await exchangeRateService.getUsdToTomanRate();
-    const oneStarToman = Math.round(unitUsdPrice * usdRate);
+    const oneStarToman = effectiveStarsUnitToman(unitUsdPrice, usdRate);
     starsRateLine = `⭐️ قیمت هر ۱ عدد استارز امروز: <b>${oneStarToman.toLocaleString("en-US")} تومان</b>`;
   }
 

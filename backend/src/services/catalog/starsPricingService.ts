@@ -85,6 +85,22 @@ export function isStarsCatalog(name?: string | null): boolean {
   return /(?:استارز|استار|stars?)/i.test(name.trim());
 }
 
+/**
+ * Per-star Toman shown in Stars list header — matches pack pricing (nearest-1 000 Toman rounding on packs).
+ * Uses the same formula as recalculateStarsProducts: convertUsdToToman(starCount × unitUsd, rate) / starCount.
+ */
+export function effectiveStarsUnitToman(
+  unitUsdPrice: number,
+  usdToTomanRate: number,
+  referenceStarCount = 1000,
+): number {
+  if (!Number.isFinite(unitUsdPrice) || unitUsdPrice <= 0) return 0;
+  if (!Number.isFinite(usdToTomanRate) || usdToTomanRate <= 0) return 0;
+  const packUsd = unitUsdPrice * referenceStarCount;
+  const packToman = convertUsdToToman(packUsd, usdToTomanRate);
+  return Math.round(packToman / referenceStarCount);
+}
+
 export class StarsPricingService {
   /**
    * Retrieves the current base USD rate per 1 Star from SystemSetting.
