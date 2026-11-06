@@ -70,40 +70,81 @@ export async function safeDeleteMessage(
   }
 }
 
-/** Edit text in place, with caption fallback and harmless double-click handling. */
+function resolveReplyMarkup(
+  normalized: EditTextExtra | undefined,
+  ctx: Context,
+): unknown {
+  let replyMarkup: unknown = normalized?.reply_markup;
+  if (typeof replyMarkup === "function") {
+    try {
+      replyMarkup = (replyMarkup as () => unknown)();
+    } catch {
+      replyMarkup = undefined;
+    }
+  }
+  if (!replyMarkup && ctx.callbackQuery?.message && "reply_markup" in ctx.callbackQuery.message) {
+    replyMarkup = (ctx.callbackQuery.message as { reply_markup?: unknown }).reply_markup;
+  }
+  return replyMarkup;
+}
+
+async function editCaptionOrReplace(
+  ctx: Context,
+  text: string,
+  normalized: EditTextExtra | undefined,
+): Promise<void> {
+  const replyMarkup = resolveReplyMarkup(normalized, ctx);
+  try {
+    await ctx.editMessageCaption({
+      caption: text,
+      parse_mode: normalized?.parse_mode ?? "Markdown",
+      reply_markup: replyMarkup as never,
+    });
+    return;
+  } catch (captionErr) {
+    if (isMessageNotModified(captionErr)) return;
+  }
+
+  const msg = ctx.callbackQuery?.message;
+  if (!msg) throw new Error("safeEdit: cannot replace message without callback message");
+  await safeDeleteMessage(ctx.api, msg.chat.id, msg.message_id);
+  await ctx.reply(text, (normalized ?? { parse_mode: "Markdown" }) as never);
+}
+
+/** Edit text in place, with caption / delete+send fallback and harmless double-click handling. */
 export async function safeEdit(
   ctx: Context,
   text: string,
   extra?: EditTextExtra | InlineKeyboard | unknown,
 ): Promise<void> {
   const normalized = normalizeExtra(extra);
+
+  if (isPhotoOrVideoMessage(ctx)) {
+    try {
+      await editCaptionOrReplace(ctx, text, normalized);
+    } catch (err) {
+      if (isMessageNotModified(err)) return;
+      throw err;
+    }
+    return;
+  }
+
   try {
     await ctx.editMessageText(text, normalized);
   } catch (err) {
     if (isMessageNotModified(err)) return;
-    try {
-      let replyMarkup: unknown = normalized?.reply_markup;
-      if (typeof replyMarkup === "function") {
-        try {
-          replyMarkup = (replyMarkup as () => unknown)();
-        } catch {
-          replyMarkup = undefined;
-        }
+    const desc =
+      err instanceof GrammyError ? err.description ?? err.message : String(err);
+    if (/there is no text in the message to edit|message can't be edited/i.test(desc)) {
+      try {
+        await editCaptionOrReplace(ctx, text, normalized);
+        return;
+      } catch (fallbackErr) {
+        if (isMessageNotModified(fallbackErr)) return;
+        throw fallbackErr;
       }
-      // If replyMarkup is not provided, preserve the message's current inline keyboard
-      if (!replyMarkup && ctx.callbackQuery?.message && "reply_markup" in ctx.callbackQuery.message) {
-        replyMarkup = (ctx.callbackQuery.message as { reply_markup?: unknown }).reply_markup;
-      }
-
-      await ctx.editMessageCaption({
-        caption: text,
-        parse_mode: normalized?.parse_mode ?? "Markdown",
-        reply_markup: replyMarkup as any,
-      });
-    } catch (captionErr) {
-      if (isMessageNotModified(captionErr)) return;
-      throw err;
     }
+    throw err;
   }
 }
 
@@ -116,28 +157,43 @@ export async function safeEditById(
   extra?: EditTextExtra | InlineKeyboard | unknown,
 ): Promise<void> {
   const normalized = normalizeExtra(extra) ?? { parse_mode: "Markdown" as const };
+
+  const tryCaption = async (): Promise<boolean> => {
+    let replyMarkup: unknown = normalized.reply_markup;
+    if (typeof replyMarkup === "function") {
+      try {
+        replyMarkup = (replyMarkup as () => unknown)();
+      } catch {
+        replyMarkup = undefined;
+      }
+    }
+    try {
+      await api.editMessageCaption(chatId, messageId, {
+        caption: text,
+        parse_mode: normalized.parse_mode ?? "Markdown",
+        reply_markup: replyMarkup as never,
+      });
+      return true;
+    } catch (captionErr) {
+      if (isMessageNotModified(captionErr)) return true;
+      return false;
+    }
+  };
+
   try {
     await api.editMessageText(chatId, messageId, text, normalized);
   } catch (err) {
     if (isMessageNotModified(err)) return;
-    try {
-      let replyMarkup: unknown = normalized.reply_markup;
-      if (typeof replyMarkup === "function") {
-        try {
-          replyMarkup = (replyMarkup as () => unknown)();
-        } catch {
-          replyMarkup = undefined;
-        }
-      }
-      await api.editMessageCaption(chatId, messageId, {
-        caption: text,
-        parse_mode: normalized.parse_mode ?? "Markdown",
-        reply_markup: replyMarkup as any,
-      });
-    } catch (captionErr) {
-      if (isMessageNotModified(captionErr)) return;
-      throw err;
+    const desc =
+      err instanceof GrammyError ? err.description ?? err.message : String(err);
+    if (/there is no text in the message to edit|message can't be edited/i.test(desc)) {
+      const ok = await tryCaption();
+      if (ok) return;
+      await safeDeleteMessage(api, chatId, messageId);
+      await api.sendMessage(chatId, text, normalized as never);
+      return;
     }
+    throw err;
   }
 }
 
@@ -150,8 +206,16 @@ export function clipShopMessageText(text: string, max = TELEGRAM_SHOP_TEXT_MAX):
 export function isPhotoOrVideoMessage(ctx: Context): boolean {
   const msg = ctx.callbackQuery?.message ?? ctx.msg;
   if (!msg) return false;
+  if ("text" in msg && typeof (msg as { text?: unknown }).text === "string") return false;
   if ("photo" in msg && msg.photo && msg.photo.length > 0) return true;
   if ("video" in msg && msg.video) return true;
+  if ("animation" in msg && (msg as { animation?: unknown }).animation) return true;
+  if ("document" in msg && (msg as { document?: unknown }).document) return true;
+  if ("audio" in msg && (msg as { audio?: unknown }).audio) return true;
+  if ("voice" in msg && (msg as { voice?: unknown }).voice) return true;
+  if ("sticker" in msg && (msg as { sticker?: unknown }).sticker) return true;
+  // Caption-only / media messages have no editable text body.
+  if ("caption" in msg) return true;
   return false;
 }
 
