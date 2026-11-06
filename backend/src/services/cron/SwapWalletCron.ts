@@ -23,6 +23,80 @@ const EXPIRE_CHUNK = 100;
 
 let tickRunning = false;
 
+const SOFT_NET_CODES = new Set([
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "ECONNREFUSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+function isSoftNetworkError(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 6 && cur; depth++) {
+    if (typeof cur !== "object" || cur === null) break;
+    const obj = cur as {
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    if (typeof obj.code === "string" && SOFT_NET_CODES.has(obj.code)) return true;
+    if (obj.name === "TimeoutError" || obj.name === "AbortError") return true;
+    if (
+      typeof obj.message === "string" &&
+      /EAI_AGAIN|ETIMEDOUT|ECONNRESET|ENOTFOUND|ECONNREFUSED|fetch failed|aborted due to timeout|TimeoutError/i.test(
+        obj.message,
+      )
+    ) {
+      return true;
+    }
+    cur = obj.cause;
+  }
+  return false;
+}
+
+function softNetworkCode(err: unknown): string {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 6 && cur; depth++) {
+    if (typeof cur !== "object" || cur === null) break;
+    const obj = cur as { code?: unknown; name?: unknown; cause?: unknown };
+    if (typeof obj.code === "string" && obj.code) return obj.code;
+    if (obj.name === "TimeoutError" || obj.name === "AbortError") return String(obj.name);
+    cur = obj.cause;
+  }
+  return "network";
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Retry transient DNS/network failures; return null on soft exhaust. */
+async function fetchDepositsWithRetry(
+  settings: Awaited<ReturnType<typeof loadSwapSettings>>,
+  limit: number,
+): Promise<Record<string, unknown>[] | null> {
+  const backoffsMs = [0, 1_500, 3_500];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < backoffsMs.length; attempt++) {
+    if (backoffsMs[attempt]! > 0) await sleep(backoffsMs[attempt]!);
+    try {
+      return await fetchRecentUsdtDeposits(settings, limit);
+    } catch (err) {
+      lastErr = err;
+      if (!isSoftNetworkError(err)) throw err;
+    }
+  }
+  console.warn(
+    `[swap-cron] deposit fetch soft-fail (${softNetworkCode(lastErr)}), will retry next tick`,
+  );
+  return null;
+}
+
 async function expireStalePending(): Promise<void> {
   const expireBefore = new Date(Date.now() - INVOICE_LIFETIME_HOURS * 60 * 60 * 1000);
   let cursor: number | undefined;
@@ -62,13 +136,17 @@ async function runSwapWalletTick(api: Api): Promise<void> {
     const settings = await loadSwapSettings();
     if (!settings.apiKey || !settings.walletAddress) return;
 
-    let rows: Record<string, unknown>[];
+    let rows: Record<string, unknown>[] | null;
     try {
-      rows = await fetchRecentUsdtDeposits(settings, 20);
+      rows = await fetchDepositsWithRetry(settings, 20);
     } catch (err) {
-      console.error("[swap-cron] deposit fetch failed:", err);
+      console.error(
+        "[swap-cron] deposit fetch failed:",
+        err instanceof Error ? err.message : err,
+      );
       return;
     }
+    if (!rows) return;
 
     const pollSince = new Date(Date.now() - POLL_ACTIVE_HOURS * 60 * 60 * 1000);
     const seenAmounts = new Set<string>();
