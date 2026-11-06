@@ -300,7 +300,14 @@ export class CanbosoSyncService {
     supplierProductKey: string,
   ): Promise<number> {
     let changes = 0;
-    const shouldBeActive = remote.stock > 0 && remote.isAvailable;
+    const remoteInStock = remote.stock > 0 && remote.isAvailable;
+
+    const fullProduct = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { forceManualFallback: true, isActive: true },
+    });
+    const shouldBeActive =
+      remoteInStock || fullProduct?.forceManualFallback === true;
 
     if (product.isActive !== shouldBeActive) {
       await prisma.product.update({
@@ -308,6 +315,12 @@ export class CanbosoSyncService {
         data: { isActive: shouldBeActive },
       });
       changes += 1;
+    }
+
+    if (remoteInStock && fullProduct?.forceManualFallback) {
+      console.log(
+        `[CanbosoSync] Product #${productId} restocked at supplier — future orders use auto fulfillment`,
+      );
     }
 
     if (product.deliveryType !== DeliveryType.SUPPLIER_AUTO) {

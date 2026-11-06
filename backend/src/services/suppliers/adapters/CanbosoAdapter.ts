@@ -1,4 +1,5 @@
 import type { SupplierProductMapping } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { env } from "../../../config/env";
 import {
   type PurchaseResult,
@@ -25,6 +26,7 @@ import {
   isCanbosoApiRefreshAllowed,
 } from "../canboso/canbosoCooldownState";
 import { logCanbosoHttpRequest } from "../canboso/canbosoRequestLog";
+import { serializeCanbosoDeliveryPayload } from "../../fulfillment/canbosoDeliveryFormat";
 
 export type CanbosoBalance = {
   balance: number;
@@ -454,6 +456,72 @@ export function expandCanbosoCatalogEntries(items: unknown[]): CanbosoCatalogPro
   return out;
 }
 
+/** Canboso requires `Idempotency-Key` header length 8–128 on POST /purchase. */
+export const CANBOSO_IDEMPOTENCY_KEY_MIN_LEN = 8;
+export const CANBOSO_IDEMPOTENCY_KEY_MAX_LEN = 128;
+
+/** Fresh idempotency key per HTTP POST (16–64 chars typical; always within 8–128). */
+export function buildCanbosoPurchaseIdempotencyKey(
+  internalInvoiceId?: number,
+  nowMs = Date.now(),
+): string {
+  const invPart = internalInvoiceId != null ? String(internalInvoiceId) : "0";
+  const nonce = randomUUID().slice(0, 8);
+  let key = `eshtrakino-inv-${invPart}-${nowMs}-${nonce}`;
+  if (key.length > CANBOSO_IDEMPOTENCY_KEY_MAX_LEN) {
+    key = key.slice(0, CANBOSO_IDEMPOTENCY_KEY_MAX_LEN);
+  }
+  while (key.length < CANBOSO_IDEMPOTENCY_KEY_MIN_LEN) {
+    key = `${key}x`;
+  }
+  return key;
+}
+
+/** Unique Canboso order identifiers per purchase attempt (avoids duplicate client_order_id / order_id). */
+export function buildCanbosoUniquePurchaseIds(
+  internalInvoiceId: number,
+  nowMs = Date.now(),
+): { clientOrderId: string; orderId: number } {
+  const attemptSuffix = Math.floor(nowMs / 1000) % 10_000;
+  const orderId = Number(`${internalInvoiceId}${attemptSuffix}`);
+  return {
+    clientOrderId: `${internalInvoiceId}_${nowMs}`,
+    orderId: Number.isFinite(orderId) ? orderId : nowMs,
+  };
+}
+
+export function extractCanbosoHttpErrorMessage(
+  body: unknown,
+  rawText: string,
+  status: number,
+): string {
+  const root = asRecord(body);
+  const data = asRecord(root?.data);
+  return (
+    pickString(
+      root?.message,
+      root?.error,
+      root?.detail,
+      data?.message,
+      data?.error,
+      data?.detail,
+    ) ??
+    (rawText.trim() || `HTTP ${status}`)
+  );
+}
+
+function isCanbosoPurchase400PayloadRetryable(message: string, rawText: string): boolean {
+  const hay = `${message} ${rawText}`.toLowerCase();
+  if (/balance|insufficient|موجودی|stock|موجود|out of stock/i.test(hay)) {
+    return false;
+  }
+  if (/^http 400$/i.test(message.trim()) || !message.trim()) {
+    return true;
+  }
+  return /order_id|client_order|duplicate|already exists|already been|previously/i.test(hay) ||
+    /invalid|validation|parameter|unexpected|required field|malformed|format|unrecognized/i.test(hay);
+}
+
 function buildCanbosoCustomFields(
   context?: SupplierPurchaseContext,
 ): Record<string, string> | undefined {
@@ -474,6 +542,7 @@ export function buildCanbosoPurchasePayload(
   const productId = mapping.supplierProductKey;
   const payload: Record<string, unknown> = {
     product_id: productId,
+    quantity: 1,
   };
 
   if (mapping.supplierVariantKey) {
@@ -486,25 +555,65 @@ export function buildCanbosoPurchasePayload(
   }
 
   if (context?.internalInvoiceId != null) {
-    payload.client_order_id = String(context.internalInvoiceId);
-    payload.order_id = context.internalInvoiceId;
+    const { clientOrderId, orderId } = buildCanbosoUniquePurchaseIds(
+      context.internalInvoiceId,
+    );
+    payload.client_order_id = clientOrderId;
+    payload.order_id = orderId;
   }
 
   return payload;
+}
+
+/** Minimal POST bodies tried when the full schema returns HTTP 400 for parameter / order_id issues. */
+export function buildCanbosoPurchaseFallbackPayloads(
+  mapping: SupplierProductMapping,
+  context?: SupplierPurchaseContext,
+): Record<string, unknown>[] {
+  const productId = mapping.supplierProductKey;
+  if (!productId) return [];
+
+  const nowMs = Date.now();
+  const clientOrderId =
+    context?.internalInvoiceId != null
+      ? buildCanbosoUniquePurchaseIds(context.internalInvoiceId, nowMs + 1)
+          .clientOrderId
+      : `esht_${nowMs}`;
+
+  const withClient: Record<string, unknown> = {
+    product_id: productId,
+    quantity: 1,
+    client_order_id: clientOrderId,
+  };
+  const minimal: Record<string, unknown> = {
+    product_id: productId,
+    quantity: 1,
+  };
+
+  if (mapping.supplierVariantKey) {
+    withClient.variant_id = mapping.supplierVariantKey;
+    minimal.variant_id = mapping.supplierVariantKey;
+  }
+
+  return [withClient, minimal];
 }
 
 function logCanbosoPurchaseFailure(
   status: number,
   body: unknown,
   message: string,
+  rawText?: string,
 ): void {
+  if (rawText != null && rawText !== "") {
+    console.error("[CanbosoHTTP Error Body]", rawText);
+  }
   console.error(
     "[CanbosoAdapter] Purchase failed",
     JSON.stringify(
       {
         status,
         message,
-        body,
+        body: body ?? (rawText ? rawText : null),
       },
       null,
       2,
@@ -521,8 +630,14 @@ export function parseCanbosoPurchaseResult(body: unknown): PurchaseResult {
   }
 
   const data = asRecord(root?.data) ?? root;
+  const order = asRecord(root?.order) ?? asRecord(data?.order);
+  const payment = asRecord(root?.payment) ?? asRecord(data?.payment);
+
   const supplierOrderId =
     pickString(
+      order?.orderCode,
+      order?.orderId,
+      order?.id,
       data?.order_id,
       data?.orderId,
       data?.purchase_id,
@@ -532,9 +647,16 @@ export function parseCanbosoPurchaseResult(body: unknown): PurchaseResult {
     ) ?? `canboso-${Date.now()}`;
 
   const costAmount =
-    pickNumber(data?.cost, data?.price, data?.amount, data?.total) ?? 0;
+    pickNumber(
+      payment?.amount,
+      payment?.originalAmount,
+      data?.cost,
+      data?.price,
+      data?.amount,
+      data?.total,
+    ) ?? 0;
 
-  const statusRaw = pickString(data?.status, root?.status)?.toLowerCase();
+  const statusRaw = pickString(order?.status, data?.status, root?.status)?.toLowerCase();
   const isProcessing =
     statusRaw === "processing" ||
     statusRaw === "pending" ||
@@ -549,7 +671,7 @@ export function parseCanbosoPurchaseResult(body: unknown): PurchaseResult {
           pickString(data?.message, root?.message) ??
           "سفارش در حال پردازش توسط تامین‌کننده است.",
       })
-    : formatDeliveryPayload(body);
+    : serializeCanbosoDeliveryPayload(body);
 
   return {
     supplierOrderId,
@@ -558,37 +680,6 @@ export function parseCanbosoPurchaseResult(body: unknown): PurchaseResult {
     isProcessing,
     status: statusRaw,
   };
-}
-
-function formatDeliveryPayload(body: unknown): string {
-  const root = asRecord(body);
-  const data = asRecord(root?.data) ?? root;
-  if (!data) {
-    return typeof body === "string" ? body : JSON.stringify(body ?? {});
-  }
-
-  const direct =
-    pickString(data.credentials, data.credential, data.payload, data.delivery) ??
-    pickString(data.text, data.message);
-  if (direct) {
-    return direct;
-  }
-
-  const fields = data.fields ?? data.delivery_fields ?? data.items;
-  if (Array.isArray(fields)) {
-    const lines = fields
-      .map((f) => {
-        const field = asRecord(f);
-        if (!field) return null;
-        const label = pickString(field.label, field.name, field.key) ?? "مقدار";
-        const value = pickString(field.value, field.content, field.data);
-        return value ? `${label}: ${value}` : null;
-      })
-      .filter(Boolean);
-    if (lines.length > 0) return lines.join("\n");
-  }
-
-  return JSON.stringify(data, null, 2);
 }
 
 function parseRetryAfterSeconds(response: Response): number {
@@ -668,8 +759,12 @@ export class CanbosoAdapter implements SupplierAdapter {
     const headers = new Headers(options.headers ?? {});
     headers.set("X-API-Key", apiKey);
     headers.set("Authorization", `Bearer ${apiKey}`);
-    headers.set("Content-Type", "application/json");
-    headers.set("Accept", "application/json");
+    if (!headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    if (!headers.has("Accept")) {
+      headers.set("Accept", "application/json");
+    }
     const method = (options.method ?? "GET").toUpperCase();
 
     try {
@@ -705,10 +800,20 @@ export class CanbosoAdapter implements SupplierAdapter {
         throw new SupplierOutOfStockError("Canboso product out of stock.");
       }
       if (response.status === 402 || response.status === 400) {
-        const text = await response.text().catch(() => "");
+        const peek = response.clone();
+        const text = await peek.text().catch(() => "");
         if (/balance|insufficient|موجودی/i.test(text)) {
+          let balanceMsg = text.trim();
+          if (balanceMsg) {
+            try {
+              const parsed: unknown = JSON.parse(text);
+              balanceMsg = extractCanbosoHttpErrorMessage(parsed, text, response.status);
+            } catch {
+              /* use raw text */
+            }
+          }
           throw new SupplierInsufficientBalanceError(
-            text || "Insufficient Canboso wallet balance.",
+            balanceMsg || "Insufficient Canboso wallet balance.",
           );
         }
       }
@@ -787,6 +892,60 @@ export class CanbosoAdapter implements SupplierAdapter {
     return snap.remoteProducts;
   }
 
+  private async postCanbosoPurchase(
+    apiKey: string,
+    payload: Record<string, unknown>,
+    signal: AbortSignal,
+    internalInvoiceId?: number,
+  ): Promise<{
+    response: Response;
+    rawText: string;
+    body: unknown;
+    message: string;
+  }> {
+    const idempotencyKey = buildCanbosoPurchaseIdempotencyKey(internalInvoiceId);
+    const response = await this.fetchApi(
+      "/api/v2/telegram-buyer/purchase",
+      apiKey,
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(payload),
+        signal,
+      },
+      { logReason: "purchase" },
+    );
+
+    const rawText = await response.text().catch(() => "");
+    let body: unknown = null;
+    try {
+      body = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      body = rawText || null;
+    }
+
+    const message = extractCanbosoHttpErrorMessage(body, rawText, response.status);
+    return { response, rawText, body, message };
+  }
+
+  private throwCanbosoPurchaseHttpError(
+    status: number,
+    body: unknown,
+    message: string,
+    rawText: string,
+  ): never {
+    logCanbosoPurchaseFailure(status, body, message, rawText);
+    if (/stock|موجود|out of stock/i.test(message)) {
+      throw new SupplierOutOfStockError(message);
+    }
+    if (/balance|insufficient|موجودی/i.test(message)) {
+      throw new SupplierInsufficientBalanceError(message);
+    }
+    throw new SupplierUnknownError(message);
+  }
+
   async purchaseProduct(
     productId: string,
     apiKey?: string,
@@ -800,50 +959,68 @@ export class CanbosoAdapter implements SupplierAdapter {
         supplierVariantKey: null,
       } as SupplierProductMapping);
 
-    const payload = buildCanbosoPurchasePayload(mapping, options?.context);
-    if (!payload.product_id) {
-      payload.product_id = productId;
+    const primaryPayload = buildCanbosoPurchasePayload(mapping, options?.context);
+    if (!primaryPayload.product_id) {
+      primaryPayload.product_id = productId;
     }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 45_000);
 
     try {
-      const response = await this.fetchApi(
-        "/api/v2/telegram-buyer/purchase",
-        key,
-        {
-          method: "POST",
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        },
-        { logReason: "purchase" },
-      );
+      const payloadsToTry: Record<string, unknown>[] = [primaryPayload];
+      const seenPayloads = new Set<string>();
 
-      const rawText = await response.text().catch(() => "");
-      let body: unknown = null;
-      try {
-        body = rawText ? JSON.parse(rawText) : null;
-      } catch {
-        body = rawText;
+      const enqueuePayload = (payload: Record<string, unknown>) => {
+        const key = JSON.stringify(payload);
+        if (seenPayloads.has(key)) return;
+        seenPayloads.add(key);
+        payloadsToTry.push(payload);
+      };
+
+      let lastAttempt: Awaited<ReturnType<CanbosoAdapter["postCanbosoPurchase"]>> | null =
+        null;
+
+      for (const payload of payloadsToTry) {
+        lastAttempt = await this.postCanbosoPurchase(
+          key,
+          payload,
+          controller.signal,
+          options?.context?.internalInvoiceId,
+        );
+
+        if (lastAttempt.response.ok) {
+          return parseCanbosoPurchaseResult(lastAttempt.body);
+        }
+
+        const { response, body, message, rawText } = lastAttempt;
+
+        if (
+          response.status === 400 &&
+          isCanbosoPurchase400PayloadRetryable(message, rawText)
+        ) {
+          for (const fallback of buildCanbosoPurchaseFallbackPayloads(
+            mapping,
+            options?.context,
+          )) {
+            enqueuePayload(fallback);
+          }
+          continue;
+        }
+
+        this.throwCanbosoPurchaseHttpError(response.status, body, message, rawText);
       }
 
-      if (!response.ok) {
-        const root = asRecord(body);
-        const msg =
-          pickString(root?.message, root?.error, asRecord(root?.data)?.message) ??
-          (rawText || `HTTP ${response.status}`);
-        logCanbosoPurchaseFailure(response.status, body, msg);
-        if (/stock|موجود/i.test(msg)) {
-          throw new SupplierOutOfStockError(msg);
-        }
-        if (/balance|insufficient|موجودی/i.test(msg)) {
-          throw new SupplierInsufficientBalanceError(msg);
-        }
-        throw new SupplierUnknownError(msg);
+      if (lastAttempt && !lastAttempt.response.ok) {
+        this.throwCanbosoPurchaseHttpError(
+          lastAttempt.response.status,
+          lastAttempt.body,
+          lastAttempt.message,
+          lastAttempt.rawText,
+        );
       }
 
-      return parseCanbosoPurchaseResult(body);
+      throw new SupplierUnknownError("Canboso purchase failed without a response.");
     } catch (error: unknown) {
       if (error instanceof Error && error.name === "AbortError") {
         throw new SupplierPurchaseUncertainError(

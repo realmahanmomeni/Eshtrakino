@@ -1,37 +1,24 @@
 import type { Api } from "grammy";
-import { InlineKeyboard } from "grammy";
 import { InvoiceStatus, SupplierOrderStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { formatToman } from "../../lib/money";
-import { groupLogger } from "../logger/GroupLogger";
+import { supplierOrderAlertService } from "./SupplierOrderAlertService";
 import { walletService } from "../wallet/WalletService";
 import { canbosoAdapter } from "./adapters/CanbosoAdapter";
 import { CANBOSO_SUPPLIER_NAME, canbosoSyncService } from "./CanbosoSyncService";
-import { Callbacks } from "../../bot/keyboards/callbacks";
 import { SupplierError } from "./SupplierAdapter";
 import { SupplierManager } from "./SupplierManager";
 import { isInternalEshtrakinoFulfillment } from "../catalog/catalogAvailability";
+import { resolveStoredCanbosoDeliveryHtml } from "../fulfillment/canbosoDeliveryFormat";
+import { deliverProductToCustomer } from "../fulfillment/customerDeliveryMessage";
 
 function isCanbosoSupplierName(name: string): boolean {
   return /canboso|کنبوسو/i.test(name);
 }
 
+/** @deprecated Use resolveStoredCanbosoDeliveryHtml + VIP template instead. */
 export function formatCanbosoDeliveryText(deliveryPayload: string): string {
-  try {
-    const parsed = JSON.parse(deliveryPayload) as unknown;
-    if (typeof parsed === "string") return parsed;
-    const record =
-      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : null;
-    if (record?.text && typeof record.text === "string") return record.text;
-    if (record?.credentials && typeof record.credentials === "string") {
-      return record.credentials;
-    }
-  } catch {
-    /* plain text payload */
-  }
-  return deliveryPayload;
+  return resolveStoredCanbosoDeliveryHtml(deliveryPayload);
 }
 
 export class CanbosoDispatchService {
@@ -104,6 +91,9 @@ export class CanbosoDispatchService {
         await this.sendDispatchRequest(api, invoiceId);
         return true;
       }
+      if (existing.status === SupplierOrderStatus.PENDING_MANUAL_DELIVERY) {
+        return true;
+      }
     }
 
     await prisma.supplierOrder.upsert({
@@ -163,12 +153,8 @@ export class CanbosoDispatchService {
       console.warn("[CanbosoDispatch] Could not fetch live cost/balance:", err);
     }
 
-    const kb = new InlineKeyboard()
-      .text("🚀 تایید شارژ و ارسال خودکار", Callbacks.adminDispatchOrder(invoiceId))
-      .row()
-      .text("❌ لغو و بازگشت به کیف پول", Callbacks.adminCancelSupplierOrder(invoiceId));
-
-    const text = [
+    const priorError = invoice.supplierOrder?.errorMessage?.trim();
+    const textLines = [
       "📦 *سفارش جدید تامین‌کننده (اشتراکینو)*",
       "",
       `▫️ شناسه سفارش: \`#INV-${invoiceId}\``,
@@ -176,11 +162,17 @@ export class CanbosoDispatchService {
       `▫️ هزینه تامین: *${supplierCost}*`,
       `▫️ موجودی فعلی تامین‌کننده: *${currentBalance}*`,
       `▫️ کاربر: \`${invoice.user.telegramId.toString()}\``,
+    ];
+    if (priorError) {
+      textLines.push("", `❌ *آخرین خطای Canboso:* ${priorError}`);
+    }
+    textLines.push(
       "",
       "⚠️ در صورت نیاز کیف‌پول تامین‌کننده را شارژ کرده و سپس دکمه ارسال را بزنید.",
-    ].join("\n");
+    );
+    const text = textLines.join("\n");
 
-    await groupLogger.logCanbosoDispatchRequest(api, text, kb);
+    await supplierOrderAlertService.publishOpenOrderAlert(api, invoiceId, text);
   }
 
   async executeDispatch(
@@ -206,6 +198,13 @@ export class CanbosoDispatchService {
       order.status === SupplierOrderStatus.SUCCESS
     ) {
       return { ok: false, message: "این سفارش قبلاً پردازش شده است." };
+    }
+
+    if (order.status === SupplierOrderStatus.PENDING_MANUAL_DELIVERY) {
+      return {
+        ok: false,
+        message: "این سفارش در صف تحویل دستی است. از دکمه «ارسال لینک / اکانت» استفاده کنید.",
+      };
     }
 
     const claim = await prisma.supplierOrder.updateMany({
@@ -280,11 +279,16 @@ export class CanbosoDispatchService {
         },
       });
 
-      const credentials = formatCanbosoDeliveryText(result.deliveryPayload);
-      await api.sendMessage(
+      const deliveryContentHtml = resolveStoredCanbosoDeliveryHtml(result.deliveryPayload);
+      await deliverProductToCustomer(
+        api,
         order.invoice.user.telegramId.toString(),
-        ["✅ *سفارش شما تحویل داده شد:*", "", credentials].join("\n"),
-        { parse_mode: "Markdown" },
+        {
+          productName: order.invoice.product.name,
+          invoiceId: order.internalInvoiceId,
+          durationDays: order.invoice.product.durationDays,
+          deliveryContentHtml,
+        },
       );
 
       const successText = "✅ با موفقیت خریداری و به مشتری تحویل شد.";
@@ -331,6 +335,34 @@ export class CanbosoDispatchService {
         order.status === SupplierOrderStatus.SUCCESS)
     ) {
       return { ok: false, message: "سفارش قبلاً تحویل داده شده و قابل لغو نیست." };
+    }
+
+    if (order?.status === SupplierOrderStatus.PENDING_MANUAL_DELIVERY) {
+      await walletService.creditTopUp(
+        invoice.userId,
+        invoice.amount,
+        `بازگشت وجه لغو تحویل دستی — فاکتور #${invoiceId}`,
+      );
+      await prisma.supplierOrder.update({
+        where: { id: order.id },
+        data: {
+          status: SupplierOrderStatus.FAILED,
+          errorMessage: "Cancelled by admin — manual delivery refunded",
+        },
+      });
+      await api.sendMessage(
+        invoice.user.telegramId.toString(),
+        [
+          "❌ *سفارش لغو شد*",
+          "",
+          `مبلغ *${formatToman(invoice.amount)}* به کیف پول شما بازگردانده شد.`,
+        ].join("\n"),
+        { parse_mode: "Markdown" },
+      );
+      if (editAdminMessage) {
+        await editAdminMessage("❌ تحویل دستی لغو شد و مبلغ به کیف پول کاربر بازگشت.");
+      }
+      return { ok: true };
     }
 
     await walletService.creditTopUp(
