@@ -13,22 +13,44 @@ import { canbosoSyncService } from "../../services/suppliers/CanbosoSyncService"
 import { ensurePanel, panelFromCtx, waitTextOnPanel, type PanelRef } from "../conversations/wait";
 import { prisma } from "../../lib/prisma";
 
-export function supplierMarginPriceKeyboard(productId: number): InlineKeyboard {
-  return new InlineKeyboard()
+export function supplierMarginPriceKeyboard(
+  productId: number,
+  options?: { forceManualFallback?: boolean },
+): InlineKeyboard {
+  const kb = new InlineKeyboard()
     .text("✏️ تغییر درصد سود", Callbacks.adminMarginEdit(productId))
     .row()
     .text("🔄 استعلام زنده تامین‌کننده", Callbacks.adminMarginLive(productId))
-    .row()
-    .text("🔙 بازگشت به محصول", Callbacks.adminViewProduct(productId));
+    .row();
+
+  const fallbackOn = options?.forceManualFallback === true;
+  kb.text(
+    fallbackOn ? "🔀 فالبک دستی: فعال" : "🔀 فالبک دستی: غیرفعال",
+    Callbacks.adminToggleManualFallback(productId),
+  ).row();
+
+  kb.text("🔙 بازگشت به محصول", Callbacks.adminViewProduct(productId));
+  return kb;
 }
 
-export function marginSavedKeyboard(productId: number): InlineKeyboard {
-  return new InlineKeyboard()
+export function marginSavedKeyboard(
+  productId: number,
+  options?: { forceManualFallback?: boolean },
+): InlineKeyboard {
+  const kb = new InlineKeyboard()
     .text("✏️ تغییر درصد سود", Callbacks.adminMarginEdit(productId))
     .row()
     .text("🔄 استعلام زنده تامین‌کننده", Callbacks.adminMarginLive(productId))
-    .row()
-    .text("🔙 بازگشت به تنظیمات محصول", Callbacks.adminViewProduct(productId));
+    .row();
+
+  const fallbackOn = options?.forceManualFallback === true;
+  kb.text(
+    fallbackOn ? "🔀 فالبک دستی: فعال" : "🔀 فالبک دستی: غیرفعال",
+    Callbacks.adminToggleManualFallback(productId),
+  ).row();
+
+  kb.text("🔙 بازگشت به تنظیمات محصول", Callbacks.adminViewProduct(productId));
+  return kb;
 }
 
 export async function buildSupplierMarginSummaryHtml(productId: number): Promise<string | null> {
@@ -92,9 +114,16 @@ export async function presentSupplierMarginPricePanel(
     return;
   }
 
+  const mapping = await prisma.product.findUnique({
+    where: { id: productId },
+    select: { forceManualFallback: true },
+  });
+
   await safeEdit(ctx, summary, {
     parse_mode: "HTML",
-    reply_markup: supplierMarginPriceKeyboard(productId),
+    reply_markup: supplierMarginPriceKeyboard(productId, {
+      forceManualFallback: mapping?.forceManualFallback,
+    }),
   });
 }
 
@@ -124,7 +153,9 @@ export async function refreshSupplierMarginAndPresentPanel(
 
   await safeEdit(ctx, summary, {
     parse_mode: "HTML",
-    reply_markup: supplierMarginPriceKeyboard(productId),
+    reply_markup: supplierMarginPriceKeyboard(productId, {
+      forceManualFallback: updatedProduct.forceManualFallback,
+    }),
   });
 
   const hasCost =
@@ -202,11 +233,12 @@ export async function setProductProfitMarginConversation(
         margin: value,
         breakdown,
         costUsd: updated.supplierCostUsd ?? breakdown.supplierCostUsd,
+        forceManualFallback: updated.forceManualFallback,
       };
     });
 
     if (confirmation) {
-      const { breakdown, margin, costUsd } = confirmation;
+      const { breakdown, margin, costUsd, forceManualFallback } = confirmation;
       const card = [
         `✅ درصد سود با موفقیت به <b>${margin}%</b> تغییر یافت.`,
         "",
@@ -218,7 +250,7 @@ export async function setProductProfitMarginConversation(
       panel = await ensurePanel(
         ctx,
         card,
-        marginSavedKeyboard(productId),
+        marginSavedKeyboard(productId, { forceManualFallback }),
         panel,
         { parse_mode: "HTML" },
       );

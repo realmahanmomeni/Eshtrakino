@@ -1,6 +1,6 @@
-import { Composer, type Bot } from "grammy";
+import { Composer, InlineKeyboard, type Bot } from "grammy";
 import { createConversation } from "@grammyjs/conversations";
-import { DeliveryType, InvoiceStatus, TicketStatus } from "@prisma/client";
+import { DeliveryType, InvoiceStatus, SupplierOrderStatus, TicketStatus } from "@prisma/client";
 import type { BotContext } from "../context";
 import { createInitialSession } from "../context";
 import { adminOnlyMiddleware } from "./middleware";
@@ -127,6 +127,14 @@ import {
 } from "./supplierPriceAdmin";
 import { isSupplierMarginAdminProduct } from "../../services/catalog/profitMarginService";
 import { registerSupplierPendingImportAdmin } from "./supplierPendingAdmin";
+import { manualDeliveryConversation } from "./manualDeliveryConversation";
+import { manualFulfillmentService } from "../../services/fulfillment/ManualFulfillmentService";
+import {
+  buildSupplierAdminActionKeyboard,
+  supplierOrderAdminKeyboard,
+} from "./supplierOrderKeyboards";
+import { supplierOrderAlertService } from "../../services/suppliers/SupplierOrderAlertService";
+import { prisma } from "../../lib/prisma";
 
 const RECEIPT_STATUS_LABELS: Record<string, string> = {
   AWAITING_APPROVAL: "در انتظار تایید",
@@ -215,7 +223,8 @@ export function registerAdmin(bot: Bot<BotContext>): void {
   bot.use(createConversation(editSubCategoryCmsConversation, "editSubCategoryCmsConversation"));
   bot.use(createConversation(addSupplierApiKeyConversation, "addSupplierApiKeyConversation"));
   bot.use(createConversation(mapSupplierProductConversation, "mapSupplierProductConversation"));
-  
+  bot.use(createConversation(manualDeliveryConversation, "manualDelivery"));
+
   bot.use(rbacAdmin);
 
   bot.command("admin", async (ctx) => {
@@ -1362,11 +1371,11 @@ export function registerAdmin(bot: Bot<BotContext>): void {
 
   admin.callbackQuery(Callbacks.adminEditProductMenu, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const products = await catalogService.listActiveProducts();
+    const products = await catalogService.listAdminProducts();
     if (products.length === 0) {
       await safeEdit(
         ctx,
-        ["ℹ️ *ویرایش محصول*", "", "محصول فعالی نیست."].join("\n"),
+        ["ℹ️ *ویرایش محصول*", "", "هیچ محصولی ثبت نشده است."].join("\n"),
         adminCatalogKeyboard(),
       );
       return;
@@ -1466,6 +1475,86 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await ctx.conversation.enter("setCredentialReq");
   });
 
+  bot.callbackQuery(/^adm:manual_deliver:(\d+)$/, async (ctx) => {
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true });
+      return;
+    }
+    const invoiceId = Number(ctx.match![1]);
+    await supplierOrderAlertService.captureCallbackOrigin(invoiceId, ctx);
+    const originMsg = ctx.callbackQuery.message;
+    if (originMsg) {
+      await supplierOrderAlertService.refreshLegacyCardKeyboard(
+        ctx.api,
+        invoiceId,
+        originMsg.chat.id,
+        originMsg.message_id,
+      );
+    }
+    ctx.session.adminManualDeliverInvoiceId = invoiceId;
+    if (ctx.callbackQuery.message) {
+      ctx.session.adminManualDeliverLogChatId = ctx.callbackQuery.message.chat.id;
+      ctx.session.adminManualDeliverLogMessageId = ctx.callbackQuery.message.message_id;
+    }
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.conversation.exitAll();
+    } catch {
+      /* ignore */
+    }
+    await ctx.conversation.enter("manualDelivery");
+  });
+
+  admin.callbackQuery(/^adm:prd:toggle_fallback:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    try {
+      const enabled = await manualFulfillmentService.toggleProductManualFallback(id);
+      await ctx.answerCallbackQuery({
+        text: enabled ? "فالبک دستی فعال شد" : "فالبک دستی غیرفعال شد",
+      });
+    } catch (err) {
+      await ctx.answerCallbackQuery({
+        text: err instanceof Error ? err.message : "خطا در تغییر تنظیم",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const product = await prisma.product.findUnique({
+      where: { id },
+      include: {
+        subCategory: true,
+        supplierProductMapping: { select: { id: true } },
+      },
+    });
+    if (!product) {
+      await safeEdit(ctx, "محصول یافت نشد.", adminCatalogKeyboard());
+      return;
+    }
+
+    ctx.session.adminTargetId = id;
+    ctx.session.adminTargetType = "product";
+
+    let stockCount: number | null = null;
+    if (product.deliveryType === "READY") {
+      stockCount = await inventoryService.countAvailable(id);
+    }
+
+    const panelText =
+      (ctx.callbackQuery.message?.text ?? "") +
+      (ctx.callbackQuery.message?.caption ?? "");
+    if (panelText.includes("حاشیه سود") || panelText.includes("تنظیم قیمت")) {
+      await presentSupplierMarginPricePanel(ctx, id);
+      return;
+    }
+
+    await safeEdit(
+      ctx,
+      renderAdminProductCardText(product, stockCount),
+      adminProductDetailKeyboard(product),
+    );
+  });
+
   admin.callbackQuery(/^adm:prod:toggle_delivery:(\d+)$/, async (ctx) => {
     const id = Number(ctx.match![1]);
     await ctx.answerCallbackQuery();
@@ -1497,7 +1586,13 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       await ctx.answerCallbackQuery({ text: "✅ نوع تحویل با موفقیت بروزرسانی شد." });
 
       await catalogService.updateProductDeliveryType(id, newType);
-      const product = await catalogService.getProduct(id, false);
+      const product = await prisma.product.findUnique({
+        where: { id },
+        include: {
+          subCategory: true,
+          supplierProductMapping: { select: { id: true } },
+        },
+      });
       if (!product) {
         await safeEdit(ctx, "محصول یافت نشد.", adminCatalogKeyboard());
         return;
@@ -1545,11 +1640,11 @@ export function registerAdmin(bot: Bot<BotContext>): void {
 
   admin.callbackQuery(Callbacks.adminEditPriceMenu, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const products = await catalogService.listActiveProducts();
+    const products = await catalogService.listAdminProducts();
     if (products.length === 0) {
       await safeEdit(
         ctx,
-        ["ℹ️ *ویرایش قیمت*", "", "محصول فعالی نیست."].join("\n"),
+        ["ℹ️ *ویرایش قیمت*", "", "هیچ محصولی ثبت نشده است."].join("\n"),
         adminCatalogKeyboard(),
       );
       return;
@@ -1616,11 +1711,11 @@ export function registerAdmin(bot: Bot<BotContext>): void {
 
   admin.callbackQuery(Callbacks.adminDelProductMenu, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const products = await catalogService.listActiveProducts();
+    const products = await catalogService.listAdminProducts();
     if (products.length === 0) {
       await safeEdit(
         ctx,
-        ["ℹ️ *حذف محصول*", "", "محصول فعالی نیست."].join("\n"),
+        ["ℹ️ *حذف محصول*", "", "هیچ محصولی ثبت نشده است."].join("\n"),
         adminCatalogKeyboard(),
       );
       return;
@@ -2174,9 +2269,32 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       return;
     }
 
+    try {
+      await ctx.conversation.exitAll();
+    } catch {
+      /* ignore — unlock buttons if manual-delivery conversation was waiting */
+    }
+
     const invoiceId = Number(ctx.match![1]);
+    const originMsg = ctx.callbackQuery.message;
+    if (originMsg) {
+      await supplierOrderAlertService.refreshLegacyCardKeyboard(
+        ctx.api,
+        invoiceId,
+        originMsg.chat.id,
+        originMsg.message_id,
+      );
+    }
+    await supplierOrderAlertService.captureCallbackOrigin(invoiceId, ctx);
+    const actionSync = supplierOrderAlertService.createActionSync(
+      ctx.api,
+      invoiceId,
+      supplierOrderAlertService.messageRefFromCallback(ctx),
+    );
+
     const editAdminMessage = async (text: string) => {
       await safeEdit(ctx, text, { parse_mode: "Markdown", reply_markup: undefined });
+      await actionSync.resolved(text);
     };
 
     const result = await canbosoDispatchService.executeDispatch(
@@ -2195,20 +2313,68 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       show_alert: true,
     }).catch(() => {});
 
-    await safeEdit(
-      ctx,
-      [
-        "📦 *سفارش تامین‌کننده*",
-        "",
-        `❌ خطا در خرید از تامین‌کننده: ${result.message}`,
-        "",
-        "کیف پول تامین‌کننده را بررسی کنید و مجدداً دکمه ارسال را بزنید.",
-      ].join("\n"),
-      {
-        parse_mode: "Markdown",
-        reply_markup: ctx.callbackQuery.message?.reply_markup,
-      },
-    ).catch(() => {});
+    const failText = [
+      "📦 *سفارش تامین‌کننده*",
+      "",
+      `❌ *Canboso:* ${result.message}`,
+      "",
+      "کیف پول تامین‌کننده را بررسی کنید و مجدداً دکمه ارسال را بزنید، یا تحویل دستی را انتخاب کنید.",
+    ].join("\n");
+
+    await safeEdit(ctx, failText, {
+      parse_mode: "Markdown",
+      reply_markup: supplierOrderAdminKeyboard(invoiceId),
+    }).catch(() => {});
+    await actionSync.openWithKeyboard(failText);
+  });
+
+  admin.callbackQuery(/^adm:mark_delivered:(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true }).catch(() => {});
+      return;
+    }
+
+    try {
+      await ctx.conversation.exitAll();
+    } catch {
+      /* ignore */
+    }
+
+    const invoiceId = Number(ctx.match![1]);
+    const originMsg = ctx.callbackQuery.message;
+    if (originMsg) {
+      await supplierOrderAlertService.refreshLegacyCardKeyboard(
+        ctx.api,
+        invoiceId,
+        originMsg.chat.id,
+        originMsg.message_id,
+      );
+    }
+    await supplierOrderAlertService.captureCallbackOrigin(invoiceId, ctx);
+    const actionSync = supplierOrderAlertService.createActionSync(
+      ctx.api,
+      invoiceId,
+      supplierOrderAlertService.messageRefFromCallback(ctx),
+    );
+
+    const editAdminMessage = async (text: string) => {
+      await safeEdit(ctx, text, { parse_mode: "Markdown", reply_markup: undefined });
+      await actionSync.resolved(text);
+    };
+
+    const result = await manualFulfillmentService.markAsDeliveredWithoutCustomerMessage(
+      invoiceId,
+      { editAdminMessage },
+    );
+
+    if (result.ok) {
+      await ctx.answerCallbackQuery({ text: "✅ تحویل ثبت شد" }).catch(() => {});
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: result.message, show_alert: true }).catch(() => {});
   });
 
   admin.callbackQuery(/^adm:cancel_order:(\d+)$/, async (ctx) => {
@@ -2217,9 +2383,32 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       return;
     }
 
+    try {
+      await ctx.conversation.exitAll();
+    } catch {
+      /* ignore */
+    }
+
     const invoiceId = Number(ctx.match![1]);
+    const originMsg = ctx.callbackQuery.message;
+    if (originMsg) {
+      await supplierOrderAlertService.refreshLegacyCardKeyboard(
+        ctx.api,
+        invoiceId,
+        originMsg.chat.id,
+        originMsg.message_id,
+      );
+    }
+    await supplierOrderAlertService.captureCallbackOrigin(invoiceId, ctx);
+    const actionSync = supplierOrderAlertService.createActionSync(
+      ctx.api,
+      invoiceId,
+      supplierOrderAlertService.messageRefFromCallback(ctx),
+    );
+
     const editAdminMessage = async (text: string) => {
       await safeEdit(ctx, text, { parse_mode: "Markdown", reply_markup: undefined });
+      await actionSync.resolved(text);
     };
 
     const result = await canbosoDispatchService.cancelAndRefundWallet(
@@ -2234,6 +2423,68 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     }
 
     await ctx.answerCallbackQuery({ text: result.message, show_alert: true }).catch(() => {});
+  });
+
+  admin.callbackQuery(Callbacks.adminPendingSupplierOrders, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.from || !(await hasAnyAdminAccess(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "⛔ دسترسی غیرمجاز", show_alert: true }).catch(() => {});
+      return;
+    }
+
+    const openStatuses: SupplierOrderStatus[] = [
+      SupplierOrderStatus.PENDING_ADMIN_DISPATCH,
+      SupplierOrderStatus.PENDING_MANUAL_DELIVERY,
+      SupplierOrderStatus.FAILED,
+      SupplierOrderStatus.UNCERTAIN,
+    ];
+
+    const orders = await prisma.supplierOrder.findMany({
+      where: { status: { in: openStatuses } },
+      include: {
+        invoice: { include: { user: true, product: true } },
+      },
+      orderBy: { internalInvoiceId: "asc" },
+    });
+
+    if (orders.length === 0) {
+      await ctx.reply("✅ هیچ سفارش باز تامین‌کننده‌ای یافت نشد.", {
+        reply_markup: await adminHomeKeyboardAsync(),
+      });
+      return;
+    }
+
+    const legacyWithoutLogRef = orders.filter((o) => o.logGroupMessageId == null).length;
+    await ctx.reply(
+      [
+        "📦 *سفارش‌های منتظر ارسال / بررسی*",
+        "",
+        `تعداد: *${orders.length}*`,
+        "",
+        "کارت هر فاکتور با دکمه‌های اقدام در پیام بعدی ارسال می‌شود.",
+        ...(legacyWithoutLogRef > 0
+          ? [
+              "",
+              `ℹ️ *${legacyWithoutLogRef}* فاکتور قدیمی: برای همگام‌سازی با گروه «گزارش های خرید»، حداقل یک بار روی همان پیام در گروه (یا از همین کارت در ربات) دکمه اقدام بزنید.`,
+            ]
+          : []),
+      ].join("\n"),
+      { parse_mode: "Markdown" },
+    );
+
+    for (const order of orders) {
+      const invoiceId = order.internalInvoiceId;
+      const text = supplierOrderAlertService.formatOpenOrderCardText(order);
+      const sent = await ctx.reply(text, {
+        parse_mode: "Markdown",
+        reply_markup: buildSupplierAdminActionKeyboard(invoiceId),
+      });
+      await supplierOrderAlertService.registerDmAlertRef(invoiceId, {
+        chatId: String(sent.chat.id),
+        messageId: sent.message_id,
+      });
+    }
   });
 
   registerSupplierPendingImportAdmin(bot);

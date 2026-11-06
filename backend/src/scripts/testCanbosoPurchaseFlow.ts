@@ -6,7 +6,10 @@ import type { SupplierProductMapping } from "@prisma/client";
 import { env } from "../config/env";
 import { prisma } from "../lib/prisma";
 import {
+  buildCanbosoPurchaseIdempotencyKey,
   buildCanbosoPurchasePayload,
+  CANBOSO_IDEMPOTENCY_KEY_MAX_LEN,
+  CANBOSO_IDEMPOTENCY_KEY_MIN_LEN,
   canbosoAdapter,
   extractSupplierCostUsdFromRow,
   parseCanbosoPurchaseResult,
@@ -279,11 +282,22 @@ async function run(): Promise<number> {
     });
 
     const validation = validateSerializedPayload(payload);
-    if (validation.ok) {
+    const idempotencyKey = buildCanbosoPurchaseIdempotencyKey(9_000_001);
+    const idempotencyOk =
+      idempotencyKey.length >= CANBOSO_IDEMPOTENCY_KEY_MIN_LEN &&
+      idempotencyKey.length <= CANBOSO_IDEMPOTENCY_KEY_MAX_LEN;
+    if (validation.ok && idempotencyOk) {
       logStep(
         "SUCCESS",
         "Step 4: Purchase Payload Construction & Validation",
-        `POST /api/v2/telegram-buyer/purchase body: ${validation.serialized}`,
+        `POST /api/v2/telegram-buyer/purchase body: ${validation.serialized}; Idempotency-Key: ${idempotencyKey}`,
+      );
+    } else if (!idempotencyOk) {
+      criticalFailure = true;
+      logStep(
+        "FAILED",
+        "Step 4: Purchase Payload Construction & Validation",
+        `Idempotency-Key length ${idempotencyKey.length} outside ${CANBOSO_IDEMPOTENCY_KEY_MIN_LEN}-${CANBOSO_IDEMPOTENCY_KEY_MAX_LEN}`,
       );
     } else {
       criticalFailure = true;

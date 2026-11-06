@@ -25,6 +25,7 @@ import {
   InsufficientBalanceError,
   walletService,
 } from "../../services/wallet/WalletService";
+import { sendAdminBalanceChangeNotification } from "../../services/wallet/adminBalanceNotification";
 
 async function resolveDisplayName(
   ctx: SessionContext,
@@ -414,43 +415,54 @@ export async function editAdminUserBalanceConversation(
       return;
     }
 
-    try {
-      const result = await conversation.external(async () =>
-        toPlain(
-          await walletService.adjustBalanceByAdmin(
-            userId,
-            delta,
-            `تعدیل ادمین (${delta > 0 ? "+" : ""}${delta})`,
-          ),
-        ),
-      );
+    const adjustOutcome = await conversation.external(async () => {
+      try {
+        const data = await walletService.adjustBalanceByAdmin(
+          userId,
+          delta,
+          `تعدیل ادمین (${delta > 0 ? "+" : ""}${delta})`,
+        );
+        return { ok: true as const, data };
+      } catch (err: unknown) {
+        if (
+          err instanceof InsufficientBalanceError ||
+          (err instanceof Error && err.name === "InsufficientBalanceError")
+        ) {
+          return { ok: false as const, reason: "INSUFFICIENT_BALANCE" as const };
+        }
+        throw err;
+      }
+    });
 
-      const sign = delta > 0 ? "+" : "";
-      await clearTarget();
+    if (!adjustOutcome.ok) {
       await showUserProfilePanel(
         conversation,
         ctx,
         userId,
         panel,
-        `✅ موجودی به‌روز شد (${sign}${formatToman(Math.abs(delta))}) → *${formatToman(result.balance)}*`,
+        "⚠️ مبلغ کسر شده بیشتر از موجودی فعلی کاربر است.",
       );
-    } catch (err) {
-      const isInsufficient =
-        err instanceof InsufficientBalanceError ||
-        (err instanceof Error && err.name === "InsufficientBalanceError");
-      if (isInsufficient) {
-        await clearTarget();
-        await showUserProfilePanel(
-          conversation,
-          ctx,
-          userId,
-          panel,
-          "⚠️ موجودی کافی نیست — موجودی نمی‌تواند منفی شود.",
-        );
-        return;
-      }
-      throw err;
+      return;
     }
+
+    const result = adjustOutcome.data;
+    const notify = await sendAdminBalanceChangeNotification(ctx.api, result);
+    const notifyNote = notify.sent
+      ? "📨 اعلان به کاربر ارسال شد."
+      : "⚠️ موجودی ذخیره شد اما ارسال اعلان به کاربر ناموفق بود (احتمالاً ربات را بلاک کرده است).";
+
+    const sign = delta > 0 ? "+" : "";
+    await clearTarget();
+    await showUserProfilePanel(
+      conversation,
+      ctx,
+      userId,
+      panel,
+      [
+        `✅ موجودی به‌روز شد (${sign}${formatToman(Math.abs(delta))}) → *${formatToman(result.balance)}*`,
+        notifyNote,
+      ].join("\n"),
+    );
   } catch (err) {
     console.error("editAdminUserBalanceConversation error:", err);
     try {

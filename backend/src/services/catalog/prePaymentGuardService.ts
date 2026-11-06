@@ -13,7 +13,17 @@ import {
 import { lazyCacheService } from "./LazyCacheService";
 import { invoiceService } from "../invoices/InvoiceService";
 
-const COST_EPS_USD = 0.0005;
+/** Supplier USD cost unchanged below this delta → no checkout price warning. */
+export const SUPPLIER_COST_USD_EPSILON = 0.001;
+
+export function isSupplierLiveCostChanged(
+  previousCostUsd: number,
+  liveCostUsd: number,
+  epsilon = SUPPLIER_COST_USD_EPSILON,
+): boolean {
+  if (previousCostUsd <= 0) return true;
+  return Math.abs(liveCostUsd - previousCostUsd) > epsilon;
+}
 
 export type PrePaymentGuardResult =
   | { status: "OK" }
@@ -107,20 +117,29 @@ async function runLiveSupplierVerification(
   productId: number,
   invoiceId: number | undefined,
 ): Promise<PrePaymentGuardResult> {
-  const stock = await fetchLiveSupplierStock(productId);
-  if (stock != null && stock <= 0) {
-    await prisma.product.update({
-      where: { id: productId },
-      data: { isActive: false },
-    });
-    return { status: "OUT_OF_STOCK" };
-  }
-
   const product = await prisma.product.findUnique({
     where: { id: productId },
     include: { category: true, subCategory: true },
   });
   if (!product) return { status: "OUT_OF_STOCK" };
+
+  const stock = await fetchLiveSupplierStock(productId);
+  if (stock != null && stock <= 0) {
+    if (product.forceManualFallback) {
+      if (!product.isActive) {
+        await prisma.product.update({
+          where: { id: productId },
+          data: { isActive: true },
+        });
+      }
+    } else {
+      await prisma.product.update({
+        where: { id: productId },
+        data: { isActive: false },
+      });
+      return { status: "OUT_OF_STOCK" };
+    }
+  }
 
   const liveCost = await fetchLiveSupplierCostUsd(productId);
   if (liveCost == null || liveCost <= 0) {
@@ -129,8 +148,7 @@ async function runLiveSupplierVerification(
   }
 
   const previousCost = product.supplierCostUsd ?? 0;
-  const costChanged =
-    previousCost <= 0 || Math.abs(liveCost - previousCost) > COST_EPS_USD;
+  const costChanged = isSupplierLiveCostChanged(previousCost, liveCost);
 
   if (costChanged) {
     await prisma.product.update({

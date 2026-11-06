@@ -8,8 +8,8 @@ import {
 import { exchangeRateService, convertUsdToToman } from "../exchangeRateService";
 import { isStarsCatalog } from "./starsPricingService";
 import { isInternalEshtrakinoFulfillment } from "./catalogAvailability";
-import { canbosoAdapter } from "../suppliers/adapters/CanbosoAdapter";
-import { SupplierManager } from "../suppliers/SupplierManager";
+import type { CanbosoCatalogProduct } from "../suppliers/adapters/CanbosoAdapter";
+import { supplierCostUsdFromRemote } from "../suppliers/canbosoCost";
 
 export type MarginPriceBreakdown = {
   supplierCostUsd: number;
@@ -111,7 +111,28 @@ export async function getEffectiveTomanFromMargin(product: Product): Promise<num
   return breakdown?.sellingToman ?? null;
 }
 
-export async function fetchLiveSupplierStock(productId: number): Promise<number | null> {
+/** E2E/dry-run only: set `E2E_MOCK_SUPPLIER_STOCK` to `0`, `5`, or `null` to skip Canboso HTTP. */
+function readE2eMockSupplierStock(): number | null | undefined {
+  const raw = process.env.E2E_MOCK_SUPPLIER_STOCK;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  if (raw.trim().toLowerCase() === "null") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+type MappedCanbosoRemote = {
+  mapping: {
+    supplierProductKey: string;
+    supplierVariantKey: string | null;
+    product: { name: string };
+  };
+  remote: CanbosoCatalogProduct;
+};
+
+async function fetchMappedCanbosoRemoteProduct(
+  productId: number,
+  reason: string,
+): Promise<MappedCanbosoRemote | null> {
   const mapping = await prisma.supplierProductMapping.findUnique({
     where: { productId },
     include: {
@@ -135,7 +156,7 @@ export async function fetchLiveSupplierStock(productId: number): Promise<number 
     getCanbosoBulkCatalog,
   } = await import("../suppliers/canboso/canbosoBulkCatalog.js");
 
-  const snap = await getCanbosoBulkCatalogForCheckout("checkout-stock");
+  const snap = await getCanbosoBulkCatalogForCheckout(reason);
   let remote = findRemoteInBulkCatalog(
     snap.indexes,
     mapping.supplierProductKey,
@@ -147,7 +168,7 @@ export async function fetchLiveSupplierStock(productId: number): Promise<number 
   if (!remote) {
     const fresh = await getCanbosoBulkCatalog({
       maxAgeMs: 0,
-      reason: "checkout-stock-fresh",
+      reason: `${reason}-fresh`,
     });
     remote =
       findRemoteInBulkCatalog(
@@ -161,60 +182,35 @@ export async function fetchLiveSupplierStock(productId: number): Promise<number 
   }
 
   if (!remote) return null;
+  return { mapping, remote };
+}
+
+export async function fetchLiveSupplierStock(productId: number): Promise<number | null> {
+  const e2eMock = readE2eMockSupplierStock();
+  if (e2eMock !== undefined) {
+    return e2eMock;
+  }
+
+  const resolved = await fetchMappedCanbosoRemoteProduct(productId, "checkout-stock");
+  if (!resolved) return null;
+
+  const { remote } = resolved;
   if (!remote.isAvailable || remote.stock <= 0) return 0;
   return Math.max(0, Math.round(remote.stock));
 }
 
+/** Same USD extraction as `CanbosoSyncService` (`supplierCostUsdFromRemote` + bulk catalog). */
 export async function fetchLiveSupplierCostUsd(productId: number): Promise<number | null> {
-  const mapping = await prisma.supplierProductMapping.findUnique({
-    where: { productId },
-    include: {
-      supplier: true,
-      product: {
-        include: {
-          category: true,
-          subCategory: true,
-          supplierProductMapping: true,
-        },
-      },
-    },
-  });
-  if (!mapping?.product || isInternalEshtrakinoFulfillment(mapping.product)) {
+  if (readE2eMockSupplierStock() !== undefined) {
     return null;
   }
 
-  const apiKeyRow = await prisma.supplierApiKey.findFirst({
-    where: {
-      supplierId: mapping.supplierId,
-      isActive: true,
-      isValid: true,
-    },
-    orderBy: { lastValidatedAt: "desc" },
-  });
+  const resolved = await fetchMappedCanbosoRemoteProduct(productId, "checkout-cost");
+  if (!resolved) return null;
 
-  const apiKey = apiKeyRow
-    ? SupplierManager.decryptKey(apiKeyRow.encryptedKey)
-    : canbosoAdapter.resolveApiKey();
-
-  const details = await canbosoAdapter.getProductDetails(
-    apiKey,
-    mapping.supplierProductKey,
-  );
-  if (!details?.variants?.length) return null;
-
-  const variant = mapping.supplierVariantKey
-    ? details.variants.find((v) => v.variantKey === mapping.supplierVariantKey)
-    : details.variants[0];
-
-  if (!variant || variant.price <= 0) return null;
-
-  // Canboso catalog prices are in Toman; convert to USD using live rate when needed.
   const usdRate = await exchangeRateService.getUsdToTomanRate();
-  if (variant.price > 50_000) {
-    return Math.round((variant.price / usdRate) * 10_000) / 10_000;
-  }
-
-  return Math.round(variant.price * 100) / 100;
+  const costUsd = supplierCostUsdFromRemote(resolved.remote, usdRate);
+  return costUsd > 0 ? costUsd : null;
 }
 
 export async function refreshLiveSupplierCostAndPricing(productId: number): Promise<Product | null> {

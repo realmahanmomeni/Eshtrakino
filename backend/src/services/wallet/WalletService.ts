@@ -11,6 +11,30 @@ export class InsufficientBalanceError extends Error {
   }
 }
 
+/** JSON / structuredClone-safe result from admin balance adjustment (no Decimal/BigInt). */
+export type AdminBalanceAdjustmentResult = {
+  balance: number;
+  previousBalance: number;
+  delta: number;
+  telegramId: string;
+};
+
+export function toCloneSafeAdminBalanceResult(params: {
+  balance: Decimal | number | string;
+  previousBalance: Decimal | number | string;
+  delta: Decimal | number | string;
+  telegramId: bigint | number | string;
+}): AdminBalanceAdjustmentResult {
+  return {
+    balance: Math.round(Number(new Decimal(String(params.balance)).toFixed(0))),
+    previousBalance: Math.round(
+      Number(new Decimal(String(params.previousBalance)).toFixed(0)),
+    ),
+    delta: Math.round(Number(new Decimal(String(params.delta)).toFixed(0))),
+    telegramId: String(params.telegramId),
+  };
+}
+
 export class WalletService {
   async getBalance(userId: number): Promise<Decimal> {
     const user = await prisma.user.findUnique({
@@ -51,7 +75,7 @@ export class WalletService {
     userId: number,
     delta: Decimal | number | string,
     description?: string,
-  ): Promise<{ balance: Decimal }> {
+  ): Promise<AdminBalanceAdjustmentResult> {
     const value = new Decimal(String(delta));
     if (value.isZero()) {
       throw new Error("Adjustment amount must be non-zero");
@@ -60,11 +84,12 @@ export class WalletService {
     return prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
         where: { id: userId },
-        select: { balance: true },
+        select: { balance: true, telegramId: true },
       });
       if (!user) throw new Error(`User #${userId} not found`);
 
-      const next = new Decimal(user.balance.toString()).plus(value);
+      const previousBalance = new Decimal(user.balance.toString());
+      const next = previousBalance.plus(value);
       if (next.isNegative()) {
         throw new InsufficientBalanceError();
       }
@@ -72,7 +97,7 @@ export class WalletService {
       const updated = await tx.user.update({
         where: { id: userId },
         data: { balance: next },
-        select: { balance: true },
+        select: { balance: true, telegramId: true },
       });
 
       await tx.walletTransaction.create({
@@ -84,8 +109,22 @@ export class WalletService {
         },
       });
 
-      return { balance: updated.balance };
+      return toCloneSafeAdminBalanceResult({
+        balance: updated.balance,
+        previousBalance,
+        delta: value,
+        telegramId: updated.telegramId,
+      });
     });
+  }
+
+  async getBalanceByTelegramId(telegramId: bigint): Promise<Decimal> {
+    const user = await prisma.user.findUnique({
+      where: { telegramId },
+      select: { balance: true },
+    });
+    if (!user) return new Decimal(0);
+    return user.balance;
   }
 
   async debitPurchase(

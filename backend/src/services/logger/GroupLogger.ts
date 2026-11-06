@@ -62,13 +62,14 @@ export class GroupLogger {
     }
   }
 
-  async logCanbosoDispatchRequest(
+  /** Send to purchase topic; returns message ref for bi-directional sync. */
+  async sendPurchaseTopicAlert(
     api: Api,
     text: string,
     replyMarkup?: InlineKeyboard,
-  ): Promise<void> {
+  ): Promise<{ chatId: string; messageId: number } | null> {
     const chatId = await this.getLogGroupId();
-    if (!chatId) return;
+    if (!chatId) return null;
 
     const threadId = await this.ensureTopic(
       api,
@@ -78,14 +79,32 @@ export class GroupLogger {
     );
 
     try {
-      await api.sendMessage(chatId, text, {
+      const sent = await api.sendMessage(chatId, text, {
         parse_mode: "Markdown",
         message_thread_id: threadId,
         reply_markup: replyMarkup,
       });
+      return { chatId, messageId: sent.message_id };
     } catch (err) {
-      console.warn("[GroupLogger] logCanbosoDispatchRequest failed:", err);
+      console.warn("[GroupLogger] sendPurchaseTopicAlert failed:", err);
+      return null;
     }
+  }
+
+  async logManualDeliveryRequest(
+    api: Api,
+    text: string,
+    replyMarkup?: InlineKeyboard,
+  ): Promise<void> {
+    await this.sendPurchaseTopicAlert(api, text, replyMarkup);
+  }
+
+  async logCanbosoDispatchRequest(
+    api: Api,
+    text: string,
+    replyMarkup?: InlineKeyboard,
+  ): Promise<void> {
+    await this.sendPurchaseTopicAlert(api, text, replyMarkup);
   }
 
   async logPurchase(

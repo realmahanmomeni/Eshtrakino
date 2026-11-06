@@ -36,6 +36,8 @@ import {
 } from "../utils/safeEdit";
 import { panelFromCtx } from "../conversations/wait";
 import { lazyCacheService } from "../../services/catalog/LazyCacheService";
+import { prisma } from "../../lib/prisma";
+import { buildWalletPageCaption } from "../../services/wallet/walletPageText";
 
 export type PresentMode = "reply" | "edit";
 
@@ -379,20 +381,22 @@ export async function presentCmsPage(
   }
 
   if (pageKey === "wallet") {
-    const [user, swapEnabled, methods] = await Promise.all([
-      invoiceService.ensureUser(BigInt(ctx.from.id)),
+    const telegramId = BigInt(ctx.from.id);
+    const [freshUser, swapEnabled, methods] = await Promise.all([
+      prisma.user.findUnique({ where: { telegramId } }),
       settingsService.getBoolSetting(SWAPPAY_ENABLED, true),
       paymentMethodService.listActiveForButtons(),
     ]);
-    const lines = [
-      baseText,
-      "",
-      `موجودی فعلی: *${formatToman(user.balance)}*`,
-      "",
+    const balance = freshUser?.balance ?? (await invoiceService.ensureUser(telegramId)).balance;
+    const topUpHint =
       methods.length > 0 || swapEnabled
         ? "روش شارژ را انتخاب کنید:"
-        : "در حال حاضر روش شارژ فعالی تنظیم نشده است.",
-    ];
+        : "در حال حاضر روش شارژ فعالی تنظیم نشده است.";
+    const caption = buildWalletPageCaption({
+      cmsText: baseText,
+      balance,
+      topUpHint,
+    });
     const kb = injectAdminControls(
       ctx,
       walletMenuKeyboard({
@@ -407,7 +411,7 @@ export async function presentCmsPage(
       mode,
       pageKey,
       page,
-      withBanner(lines.join("\n"), banner),
+      withBanner(caption, banner),
       kb,
     );
     return;

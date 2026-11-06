@@ -75,6 +75,7 @@ export function adminHomeKeyboard(options?: { pendingImportCount?: number }): In
     { text: "🖼️ مدیریت صفحات", data: "adm:cms_menu" },
     { text: "👥 مدیریت کاربران", data: Callbacks.adminUsers },
     { text: "🧾 مدیریت رسیدها", data: Callbacks.adminReceipts },
+    { text: "📦 سفارش‌های منتظر ارسال", data: Callbacks.adminPendingSupplierOrders },
     { text: "🔗 تامین‌کنندگان", data: "adm:suppliers" },
     { text: "💾 مدیریت بکاپ", data: Callbacks.adminBackupMenu },
     { text: "📢 قفل کانال", data: "adm:force_join" },
@@ -568,6 +569,12 @@ function truncateLabel(name: string, max = 30): string {
   return name.length > max ? `${name.slice(0, max - 1)}…` : name;
 }
 
+function adminProductListLabel(name: string, isActive?: boolean, max = 25): string {
+  const base = truncateLabel(name, max);
+  const suffix = isActive === false ? " ⏸" : "";
+  return `🔹 ${base}${suffix}`;
+}
+
 export function convProductPickCategoryKeyboard(
   categories: Array<{ id: number; name: string }>,
 ): InlineKeyboard {
@@ -582,20 +589,20 @@ export function convProductPickCategoryKeyboard(
 }
 
 export function convProductPickCategoryContentsKeyboard(
-  subCategories: Array<{ id: number; name: string }>,
-  standaloneProducts: Array<{ id: number; name: string }>,
+  subCategories: Array<{ id: number; name: string; isActive?: boolean }>,
+  standaloneProducts: Array<{ id: number; name: string; isActive?: boolean }>,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (subCategories.length > 0) {
     const subButtons = subCategories.map((s) => ({
-      text: `📑 ${truncateLabel(s.name, 25)}`,
+      text: `📑 ${truncateLabel(s.name, 25)}${s.isActive === false ? " ⏸" : ""}`,
       data: ConvCb.pickSubCat(s.id),
     }));
     appendTwoColumn(kb, subButtons);
   }
   if (standaloneProducts.length > 0) {
     const prodButtons = standaloneProducts.map((p) => ({
-      text: `🔹 ${truncateLabel(p.name, 25)}`,
+      text: adminProductListLabel(p.name, p.isActive, 25),
       data: ConvCb.pickProd(p.id),
     }));
     appendTwoColumn(kb, prodButtons);
@@ -605,12 +612,12 @@ export function convProductPickCategoryContentsKeyboard(
 }
 
 export function convProductPickSubCategoryPlansKeyboard(
-  products: Array<{ id: number; name: string }>,
+  products: Array<{ id: number; name: string; isActive?: boolean }>,
   parentLabel?: string,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   const prodButtons = products.map((p) => ({
-    text: `🔹 ${truncateLabel(p.name, 25)}`,
+    text: adminProductListLabel(p.name, p.isActive, 25),
     data: ConvCb.pickProd(p.id),
   }));
   appendTwoColumn(kb, prodButtons);
@@ -637,7 +644,8 @@ export function adminProductPickKeyboard(
           : mode === "edit"
             ? Callbacks.adminEditProduct(p.id)
             : Callbacks.adminDelProduct(p.id);
-      const label = `🔹 ${name} · ${price}`;
+      const inactive = p.isActive === false ? " ⏸" : "";
+      const label = `🔹 ${name} · ${price}${inactive}`;
       return {
         text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
         data,
@@ -649,7 +657,10 @@ export function adminProductPickKeyboard(
 }
 
 export function adminProductDetailKeyboard(
-  product: Pick<Product, "id" | "deliveryType">,
+  product: Pick<Product, "id" | "deliveryType"> & {
+    forceManualFallback?: boolean;
+    supplierProductMapping?: { id: number } | null;
+  },
 ): InlineKeyboard {
   const kb = new InlineKeyboard()
     // Row 1: Price and Name
@@ -678,6 +689,14 @@ export function adminProductDetailKeyboard(
 
   if (product.deliveryType === "READY") {
     kb.text("📦 شارژ انبار", ConvCb.editProductRestock).row();
+  }
+
+  if (product.supplierProductMapping) {
+    const fallbackOn = product.forceManualFallback === true;
+    kb.text(
+      fallbackOn ? "🔀 فالبک دستی: فعال" : "🔀 فالبک دستی: غیرفعال",
+      Callbacks.adminToggleManualFallback(product.id),
+    ).row();
   }
 
   kb.text("❌ لغو", ConvCb.cancel);

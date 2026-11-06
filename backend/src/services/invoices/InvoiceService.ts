@@ -65,6 +65,60 @@ export type InvoiceAmountLinesSource = Pick<
   discountAmount?: Invoice["discountAmount"];
 };
 
+export type InvoiceDiscountFields = Pick<
+  Invoice,
+  "amount" | "discountCode" | "discountPercent" | "discountAmount" | "originalAmount"
+>;
+
+export function invoiceHasAppliedDiscount(invoice: InvoiceDiscountFields): boolean {
+  if (!invoice.discountCode?.trim()) return false;
+  if (invoice.discountPercent != null && invoice.discountPercent > 0) return true;
+  return Number(invoice.discountAmount) > 0;
+}
+
+/**
+ * Applies the invoice's stored discount rule to a fresh undiscounted base price (FX/margin refresh).
+ */
+export function computeDiscountedPayableAmount(
+  currentBasePrice: number,
+  invoice: InvoiceDiscountFields,
+): number {
+  const base = Math.round(currentBasePrice);
+  if (!invoiceHasAppliedDiscount(invoice)) {
+    return base;
+  }
+
+  if (invoice.discountPercent != null && invoice.discountPercent > 0) {
+    const discountAmount = Math.round((base * invoice.discountPercent) / 100);
+    return Math.max(0, base - discountAmount);
+  }
+
+  const original =
+    invoice.originalAmount != null
+      ? Math.round(Number(invoice.originalAmount))
+      : Math.round(Number(invoice.amount));
+  const priorDiscount = Math.round(Number(invoice.discountAmount));
+  if (original > 0 && priorDiscount > 0) {
+    const discountAmount = Math.round((base * priorDiscount) / original);
+    return Math.max(0, base - discountAmount);
+  }
+
+  return base;
+}
+
+export function computeDiscountBreakdownForBasePrice(
+  currentBasePrice: number,
+  invoice: InvoiceDiscountFields,
+): { payableAmount: number; originalAmount: number; discountAmount: number } {
+  const originalAmount = Math.round(currentBasePrice);
+  const payableAmount = computeDiscountedPayableAmount(originalAmount, invoice);
+  return {
+    payableAmount,
+    originalAmount,
+    discountAmount: Math.max(0, originalAmount - payableAmount),
+  };
+}
+
 export function renderInvoiceAmountLines(invoice: InvoiceAmountLinesSource): string[] {
   if (
     invoice.discountCode &&
@@ -251,21 +305,29 @@ export class InvoiceService {
     }
 
     if (newPrice != null && newPrice > 0) {
-      const oldPrice = Math.round(Number(invoice.amount));
+      const oldPayable = Math.round(Number(invoice.amount));
+      const breakdown = computeDiscountBreakdownForBasePrice(newPrice, invoice);
+      const expectedPayable = breakdown.payableAmount;
 
-      if (newPrice !== oldPrice) {
+      if (expectedPayable !== oldPayable) {
+        const updateData: Prisma.InvoiceUpdateInput = {
+          amount: new Decimal(expectedPayable),
+        };
+        if (invoiceHasAppliedDiscount(invoice)) {
+          updateData.originalAmount = new Decimal(breakdown.originalAmount);
+          updateData.discountAmount = new Decimal(breakdown.discountAmount);
+        }
+
         const updated = await prisma.invoice.update({
           where: { id: invoice.id },
-          data: {
-            amount: new Decimal(newPrice),
-          },
+          data: updateData,
           include: { product: true, user: true },
         });
         return {
           invoice: updated,
           priceChanged: true,
-          oldPrice,
-          newPrice,
+          oldPrice: oldPayable,
+          newPrice: expectedPayable,
         };
       }
     }

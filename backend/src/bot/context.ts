@@ -45,6 +45,10 @@ export interface SessionData {
   shopShowOutOfStock?: boolean;
   /** Last shop subcategory viewed (for admin OOS toggle re-render) */
   lastShopSubCategoryId?: number;
+  /** Manual supplier delivery conversation */
+  adminManualDeliverInvoiceId?: number;
+  adminManualDeliverLogChatId?: number;
+  adminManualDeliverLogMessageId?: number;
 };
 
 /** Explicit defaults for `session({ initial })` — keeps keys defined. */
@@ -75,6 +79,9 @@ export function createInitialSession(): SessionData {
     adminPendingListBack: undefined,
     shopShowOutOfStock: undefined,
     lastShopSubCategoryId: undefined,
+    adminManualDeliverInvoiceId: undefined,
+    adminManualDeliverLogChatId: undefined,
+    adminManualDeliverLogMessageId: undefined,
   };
 }
 

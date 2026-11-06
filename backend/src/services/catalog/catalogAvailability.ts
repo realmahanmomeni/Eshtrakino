@@ -60,7 +60,17 @@ export function withOutOfStockPrefix(label: string, outOfStock: boolean): string
   return `❌ ${trimmed}`;
 }
 
+export function isForceManualFallbackProduct(
+  product: Pick<Product, "forceManualFallback" | "deliveryType">,
+): boolean {
+  return product.deliveryType === DeliveryType.SUPPLIER_AUTO && product.forceManualFallback === true;
+}
+
 export async function isProductOutOfStock(product: Product): Promise<boolean> {
+  if (isForceManualFallbackProduct(product)) {
+    return false;
+  }
+
   if (!product.isActive) return true;
 
   if (

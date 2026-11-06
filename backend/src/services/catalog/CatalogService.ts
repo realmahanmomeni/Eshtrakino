@@ -318,6 +318,29 @@ export class CatalogService {
     });
   }
 
+  /** Admin catalog: all products in a category (includes supplier-OOS / isActive=false). */
+  async listAdminProductsByCategory(categoryId: number): Promise<Product[]> {
+    return prisma.product.findMany({
+      where: { categoryId },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  /** Admin catalog: all products in a subcategory (includes inactive). */
+  async listAdminProductsBySubCategory(subCategoryId: number): Promise<Product[]> {
+    return prisma.product.findMany({
+      where: { subCategoryId },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  /** Admin pick lists — every product regardless of shop visibility. */
+  async listAdminProducts(): Promise<Product[]> {
+    return prisma.product.findMany({
+      orderBy: [{ categoryId: "asc" }, { id: "asc" }],
+    });
+  }
+
   async getProduct(
     productId: number,
     activeOnly = true,

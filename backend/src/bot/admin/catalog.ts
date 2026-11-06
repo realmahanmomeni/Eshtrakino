@@ -76,15 +76,29 @@ export function renderAdminProductCardText(
   const stockLine =
     stockCount != null ? `\n📦 موجودی فعلی انبار: *${stockCount}*` : "";
 
+  const shopStatusLine =
+    product.isActive === false
+      ? "📊 وضعیت در فروشگاه: *غیرفعال / ناموجود*"
+      : "📊 وضعیت در فروشگاه: *فعال*";
+
+  const fallbackLine =
+    product.supplierProductMapping != null
+      ? product.forceManualFallback
+        ? "🔀 فالبک تحویل دستی (تامین‌کننده OOS): *فعال*"
+        : "🔀 فالبک تحویل دستی (تامین‌کننده OOS): *غیرفعال*"
+      : null;
+
   return [
     "✏️ *ویرایش محصول*",
     "",
     `📦 محصول: *${product.name}*`,
     subCatLine,
     priceLine,
+    shopStatusLine,
     getDeliveryModeCaption(product.deliveryType),
     durationLine,
     `⚠️ آستانه موجودی: *${product.lowStockThreshold}*${stockLine}`,
+    ...(fallbackLine ? ["", fallbackLine] : []),
     "",
     "کدام بخش را می خواهید ویرایش کنید؟",
   ].join("\n");
@@ -570,12 +584,12 @@ export async function editProductConversation(
       while (!productId) {
         if (currentTier === "categories") {
           const categories = await conversation.external(async () =>
-            toPlain(await catalogService.listActiveCategories()),
+            toPlain(await catalogService.listAllCategories()),
           );
           if (categories.length === 0) {
             await ensurePanel(
               ctx,
-              ["ℹ️ *ویرایش محصول*", "", "دسته‌بندی فعالی وجود ندارد."].join("\n"),
+              ["ℹ️ *ویرایش محصول*", "", "هیچ دسته‌بندی ثبت نشده است."].join("\n"),
               adminCatalogKeyboard(),
               panel,
             );
@@ -615,8 +629,8 @@ export async function editProductConversation(
         if (currentTier === "category") {
           const categoryData = await conversation.external(async () => {
             const [subCats, prods] = await Promise.all([
-              catalogService.listSubCategoriesByCategory(selectedCategoryId!, true),
-              catalogService.listActiveProductsByCategory(selectedCategoryId!),
+              catalogService.listSubCategoriesByCategory(selectedCategoryId!, false),
+              catalogService.listAdminProductsByCategory(selectedCategoryId!),
             ]);
             return {
               subCategories: toPlain(subCats),
@@ -635,7 +649,7 @@ export async function editProductConversation(
                 "",
                 `📁 دسته‌بندی: *${selectedCategoryName}*`,
                 "",
-                "هیچ محصول یا سرویس فعالی در این دسته‌بندی وجود ندارد.",
+                "هیچ محصول یا سرویسی در این دسته‌بندی ثبت نشده است.",
               ].join("\n"),
               new InlineKeyboard().text("🔙 بازگشت به دسته‌بندی‌ها", ConvCb.pickBackCats),
               panel,
@@ -690,7 +704,7 @@ export async function editProductConversation(
 
         if (currentTier === "subcategory") {
           const plans = await conversation.external(async () =>
-            toPlain(await catalogService.listActiveProductsBySubCategory(selectedSubCategoryId!)),
+            toPlain(await catalogService.listAdminProductsBySubCategory(selectedSubCategoryId!)),
           );
 
           if (plans.length === 0) {
@@ -702,7 +716,7 @@ export async function editProductConversation(
                 "",
                 `📑 سرویس: *${selectedSubCategoryName}*`,
                 "",
-                "هیچ پلن فعالی برای این سرویس وجود ندارد.",
+                "هیچ پلنی برای این سرویس ثبت نشده است.",
               ].join("\n"),
               new InlineKeyboard().text(
                 `🔙 بازگشت به ${selectedCategoryName}`,
@@ -761,7 +775,7 @@ export async function editProductConversation(
       // Lean select + toPlain — Prisma Decimal/BigInt cannot cross conversation.external()
       const product = await conversation.external(async () => {
         const row: any = await (prisma.product.findFirst as any)({
-          where: { id: productId!, isActive: true },
+          where: { id: productId! },
           select: {
             id: true,
             name: true,
@@ -776,7 +790,10 @@ export async function editProductConversation(
             bannerFileId: true,
             categoryId: true,
             subCategoryId: true,
+            isActive: true,
+            forceManualFallback: true,
             subCategory: { select: { id: true, name: true } },
+            supplierProductMapping: { select: { id: true } },
           },
         });
         return row ? toPlain(row) : null;
@@ -1353,7 +1370,7 @@ export async function editSubCategoryConversation(
       }
 
       const productsCount = await conversation.external(async () => {
-        const prods = await catalogService.listActiveProductsBySubCategory(subCategoryId);
+        const prods = await catalogService.listAdminProductsBySubCategory(subCategoryId);
         return prods.length;
       });
 
@@ -1365,7 +1382,7 @@ export async function editSubCategoryConversation(
           "",
           `📑 نام سرویس: *${subCategory.name}*`,
           `🗂 دسته والد: *${category.name}*`,
-          `📦 تعداد پلن‌ها/محصولات فعال: *${productsCount}*`,
+          `📦 تعداد پلن‌ها/محصولات: *${productsCount}*`,
           `🔖 توضیحات: ${subCategory.description || "ثبت نشده"}`,
           "",
           "کدام بخش را می‌خواهید ویرایش کنید؟",

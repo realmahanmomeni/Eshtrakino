@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DeliveryType } from "@prisma/client";
-import { isInternalEshtrakinoFulfillment } from "./catalogAvailability";
+import {
+  isForceManualFallbackProduct,
+  isInternalEshtrakinoFulfillment,
+} from "./catalogAvailability";
 
 const educationCategory = { name: "🎓 آموزش و یادگیری" };
 const telegramCategory = { name: "📱 خدمات تلگرام" };
@@ -61,6 +64,23 @@ test("YouTube premium outside Telegram category is not internal even without map
       name: "یوتیوب پرمیوم ۱ ماهه",
       deliveryType: DeliveryType.MANUAL,
       category: { name: "🎬 فیلم و موسیقی" },
+    }),
+    false,
+  );
+});
+
+test("forceManualFallback keeps supplier-auto product treated as in stock for shop", () => {
+  assert.equal(
+    isForceManualFallbackProduct({
+      deliveryType: DeliveryType.SUPPLIER_AUTO,
+      forceManualFallback: true,
+    }),
+    true,
+  );
+  assert.equal(
+    isForceManualFallbackProduct({
+      deliveryType: DeliveryType.SUPPLIER_AUTO,
+      forceManualFallback: false,
     }),
     false,
   );
