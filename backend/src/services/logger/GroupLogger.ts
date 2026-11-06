@@ -2,6 +2,7 @@ import type { Api, InlineKeyboard } from "grammy";
 import { InputFile } from "grammy";
 import type { Decimal } from "@prisma/client/runtime/library";
 import { formatToman } from "../../lib/money";
+import { escapeHtml } from "../../lib/htmlEscape";
 import { invoiceService } from "../invoices/InvoiceService";
 import {
   settingsService,
@@ -19,9 +20,14 @@ const OTHER_TOPIC_NAME = "سایر گزارشات ⚙️";
 const INVENTORY_TOPIC_NAME = "گزارش انبار 📦";
 const TICKET_TOPIC_NAME = "پشتیبانی 🎧";
 
+function tgUserHtml(id: number | string, label = "User"): string {
+  return `<a href="tg://user?id=${id}">${escapeHtml(label)}</a>`;
+}
+
 /**
  * Sends operational logs to the configured Telegram group.
  * LOG_GROUP_ID is stored in SystemSetting (set via admin panel).
+ * Self-built messages use HTML + escapeHtml for user-provided fields.
  */
 export class GroupLogger {
   async getLogGroupId(): Promise<string | null> {
@@ -128,15 +134,15 @@ export class GroupLogger {
       await api.sendMessage(
         chatId,
         [
-          "🛒 *خرید جدید*",
+          "🛒 <b>خرید جدید</b>",
           "",
-          `🧾 فاکتور: *#${invoiceId}*`,
-          `📦 محصول: *${productName}*`,
-          `💵 مبلغ: *${formatToman(amount)}*`,
-          `👤 کاربر: \`${userTelegramId}\``,
+          `🧾 فاکتور: <b>#${invoiceId}</b>`,
+          `📦 محصول: <b>${escapeHtml(productName)}</b>`,
+          `💵 مبلغ: <b>${escapeHtml(formatToman(amount))}</b>`,
+          `👤 کاربر: <code>${escapeHtml(userTelegramId)}</code>`,
         ].join("\n"),
         {
-          parse_mode: "Markdown",
+          parse_mode: "HTML",
           message_thread_id: threadId,
         },
       );
@@ -165,12 +171,12 @@ export class GroupLogger {
     );
 
     const caption = [
-      "💰 *درخواست شارژ کیف پول*",
+      "💰 <b>درخواست شارژ کیف پول</b>",
       "",
-      `🧾 فاکتور: *#${invoiceId}*`,
-      `💵 مبلغ: *${formatToman(amount)}*`,
-      `👤 شناسه کاربر: \`${userTelegramId}\``,
-      `🔖 نام کاربری: *${username}*`,
+      `🧾 فاکتور: <b>#${invoiceId}</b>`,
+      `💵 مبلغ: <b>${escapeHtml(formatToman(amount))}</b>`,
+      `👤 شناسه کاربر: <code>${escapeHtml(userTelegramId)}</code>`,
+      `🔖 نام کاربری: <b>${escapeHtml(username)}</b>`,
       "",
       "👇 رسید را تایید یا رد کنید:",
     ].join("\n");
@@ -178,7 +184,7 @@ export class GroupLogger {
     try {
       const sent = await api.sendPhoto(chatId, receiptFileId, {
         caption,
-        parse_mode: "Markdown",
+        parse_mode: "HTML",
         message_thread_id: threadId,
         reply_markup: replyMarkup,
       });
@@ -231,12 +237,12 @@ export class GroupLogger {
     await this.sendMessage(
       api,
       [
-        "💰 *ثبت درآمد*",
+        "💰 <b>ثبت درآمد</b>",
         "",
-        `💵 مبلغ: *${formatToman(amount)}*`,
-        `💳 روش: *${label}*`,
+        `💵 مبلغ: <b>${escapeHtml(formatToman(amount))}</b>`,
+        `💳 روش: <b>${escapeHtml(label)}</b>`,
       ].join("\n"),
-      { parse_mode: "Markdown" },
+      { parse_mode: "HTML" },
     );
   }
 
@@ -246,13 +252,13 @@ export class GroupLogger {
     await this.sendMessage(
       api,
       [
-        "🚨 *خطای سیستمی*",
+        "🚨 <b>خطای سیستمی</b>",
         "",
-        message,
+        escapeHtml(message),
         "",
-        `\`${detail.slice(0, 500)}\``,
+        `<code>${escapeHtml(detail.slice(0, 500))}</code>`,
       ].join("\n"),
-      { parse_mode: "Markdown" },
+      { parse_mode: "HTML" },
     );
   }
 
@@ -264,11 +270,11 @@ export class GroupLogger {
     await this.sendMessage(
       api,
       [
-        "⚠️ *هشدار: اتمام موجودی*",
+        "⚠️ <b>هشدار: اتمام موجودی</b>",
         "",
-        `موجودی محصول \`${productName}\` به پایان رسیده است (فاکتور #${invoiceId}).`,
+        `موجودی محصول <code>${escapeHtml(productName)}</code> به پایان رسیده است (فاکتور #${invoiceId}).`,
       ].join("\n"),
-      { parse_mode: "Markdown" },
+      { parse_mode: "HTML" },
     );
   }
 
@@ -283,16 +289,16 @@ export class GroupLogger {
     await this.sendMessage(
       api,
       [
-        "🔐 *دریافت اطلاعات اکانت از خریدار*",
+        "🔐 <b>دریافت اطلاعات اکانت از خریدار</b>",
         "",
-        `🔹 فاکتور: \`#${invoiceId}\``,
-        `👤 کاربر: [User](tg://user?id=${userTelegramId}) (\`${userTelegramId}\`)`,
-        `📦 محصول: \`${productName}\``,
+        `🔹 فاکتور: <code>#${invoiceId}</code>`,
+        `👤 کاربر: ${tgUserHtml(userTelegramId)} (<code>${escapeHtml(userTelegramId)}</code>)`,
+        `📦 محصول: <code>${escapeHtml(productName)}</code>`,
         "",
-        `📧 ایمیل: \`${email}\``,
-        `🔑 رمز عبور: \`${password}\``,
+        `📧 ایمیل: <code>${escapeHtml(email)}</code>`,
+        `🔑 رمز عبور: <code>${escapeHtml(password)}</code>`,
       ].join("\n"),
-      { parse_mode: "Markdown" },
+      { parse_mode: "HTML" },
     );
   }
 
@@ -310,13 +316,13 @@ export class GroupLogger {
       await api.sendMessage(
         chatId,
         [
-          "⚠️ *هشدار موجودی انبار*",
+          "⚠️ <b>هشدار موجودی انبار</b>",
           "",
-          `موجودی محصول *${productName}* به نقطه سفارش رسید!`,
-          `تعداد باقیمانده: *${remaining}* عدد.`,
+          `موجودی محصول <b>${escapeHtml(productName)}</b> به نقطه سفارش رسید!`,
+          `تعداد باقیمانده: <b>${remaining}</b> عدد.`,
         ].join("\n"),
         {
-          parse_mode: "Markdown",
+          parse_mode: "HTML",
           message_thread_id: threadId,
         },
       );
@@ -334,22 +340,24 @@ export class GroupLogger {
     if (!chatId) return;
     const threadId = await this.ensureTopic(api, chatId, LOG_OTHER_TOPIC_ID_KEY, OTHER_TOPIC_NAME);
     const date = new Date().toLocaleString("fa-IR", { timeZone: "Asia/Tehran" });
-    const referrerInfo = referrer
-      ? `[User](tg://user?id=${referrer.id}) (${referrer.id}${referrer.username ? ` · @${referrer.username}` : ""})`
-      : "ندارد";
+    const formatUser = (u: { id: number; username?: string | null }): string => {
+      const handle = u.username ? ` · @${escapeHtml(u.username)}` : "";
+      return `${tgUserHtml(u.id)} (${u.id}${handle})`;
+    };
+    const referrerInfo = referrer ? formatUser(referrer) : "ندارد";
 
     try {
       await api.sendMessage(
         chatId,
         [
-          "🆕 *کاربر جدید عضو شد*",
+          "🆕 <b>کاربر جدید عضو شد</b>",
           "",
-          `👤 کاربر: [User](tg://user?id=${user.id}) (${user.id}${user.username ? ` · @${user.username}` : ""})`,
-          `📅 تاریخ: ${date}`,
+          `👤 کاربر: ${formatUser(user)}`,
+          `📅 تاریخ: ${escapeHtml(date)}`,
           `🔗 معرف: ${referrerInfo}`,
         ].join("\n"),
         {
-          parse_mode: "Markdown",
+          parse_mode: "HTML",
           message_thread_id: threadId,
         },
       );
@@ -365,11 +373,11 @@ export class GroupLogger {
     text: string,
   ): Promise<number | null> {
     const msgText = [
-      `🎫 *تیکت جدید: #${ticketId}*`,
-      `👤 کاربر: [${user.name || "User"}](tg://user?id=${user.telegramId})`,
+      `🎫 <b>تیکت جدید: #${ticketId}</b>`,
+      `👤 کاربر: ${tgUserHtml(user.telegramId, user.name || "User")}`,
       "",
       "متن پیام:",
-      text,
+      escapeHtml(text),
     ].join("\n");
 
     const replyMarkup = {
@@ -388,7 +396,7 @@ export class GroupLogger {
       if (chatId) {
         const threadId = await this.ensureTopic(api, chatId, LOG_TICKET_TOPIC_ID_KEY, TICKET_TOPIC_NAME);
         const sent = await api.sendMessage(chatId, msgText, {
-          parse_mode: "Markdown",
+          parse_mode: "HTML",
           message_thread_id: threadId,
           reply_markup: replyMarkup,
         });
@@ -415,7 +423,7 @@ export class GroupLogger {
       for (const adminId of adminIds) {
         try {
           await api.sendMessage(adminId, msgText, {
-            parse_mode: "Markdown",
+            parse_mode: "HTML",
             reply_markup: replyMarkup,
           });
         } catch (e) {
