@@ -1638,26 +1638,45 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     }
   });
 
-  admin.callbackQuery(Callbacks.adminEditPriceMenu, async (ctx) => {
-    await ctx.answerCallbackQuery();
+  async function presentAdminProductPick(
+    ctx: BotContext,
+    mode: "price" | "delete",
+    page = 0,
+  ): Promise<void> {
     const products = await catalogService.listAdminProducts();
+    const emptyTitle = mode === "price" ? "ℹ️ *ویرایش قیمت*" : "ℹ️ *حذف محصول*";
     if (products.length === 0) {
       await safeEdit(
         ctx,
-        ["ℹ️ *ویرایش قیمت*", "", "هیچ محصولی ثبت نشده است."].join("\n"),
+        [emptyTitle, "", "هیچ محصولی ثبت نشده است."].join("\n"),
         adminCatalogKeyboard(),
       );
       return;
     }
-    await safeEdit(
-      ctx,
-      [
-        "💵 *ویرایش قیمت*",
-        "",
-        "محصولی که می خواهید قیمتش را تغییر دهید انتخاب کنید:",
-      ].join("\n"),
-      adminProductPickKeyboard(products, "price"),
-    );
+    const title =
+      mode === "price"
+        ? [
+            "💵 *ویرایش قیمت*",
+            "",
+            "محصولی که می خواهید قیمتش را تغییر دهید انتخاب کنید:",
+          ]
+        : [
+            "🗑 *حذف محصول*",
+            "",
+            "محصولی که می خواهید حذف (غیرفعال) شود را انتخاب کنید:",
+          ];
+    await safeEdit(ctx, title.join("\n"), adminProductPickKeyboard(products, mode, page));
+  }
+
+  admin.callbackQuery(Callbacks.adminEditPriceMenu, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await presentAdminProductPick(ctx, "price", 0);
+  });
+
+  admin.callbackQuery(/^adm:prd:pricem:p:(\d+)$/, async (ctx) => {
+    const page = Number(ctx.match![1]);
+    await ctx.answerCallbackQuery();
+    await presentAdminProductPick(ctx, "price", page);
   });
 
   admin.callbackQuery(/^adm:prd:price:(\d+)$/, async (ctx) => {
@@ -1711,24 +1730,13 @@ export function registerAdmin(bot: Bot<BotContext>): void {
 
   admin.callbackQuery(Callbacks.adminDelProductMenu, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const products = await catalogService.listAdminProducts();
-    if (products.length === 0) {
-      await safeEdit(
-        ctx,
-        ["ℹ️ *حذف محصول*", "", "هیچ محصولی ثبت نشده است."].join("\n"),
-        adminCatalogKeyboard(),
-      );
-      return;
-    }
-    await safeEdit(
-      ctx,
-      [
-        "🗑 *حذف محصول*",
-        "",
-        "محصولی که می خواهید حذف (غیرفعال) شود را انتخاب کنید:",
-      ].join("\n"),
-      adminProductPickKeyboard(products, "delete"),
-    );
+    await presentAdminProductPick(ctx, "delete", 0);
+  });
+
+  admin.callbackQuery(/^adm:prd:delm:p:(\d+)$/, async (ctx) => {
+    const page = Number(ctx.match![1]);
+    await ctx.answerCallbackQuery();
+    await presentAdminProductPick(ctx, "delete", page);
   });
 
   admin.callbackQuery(/^adm:prd:del:(\d+)$/, async (ctx) => {

@@ -107,8 +107,15 @@ async function editCaptionOrReplace(
 
   const msg = ctx.callbackQuery?.message;
   if (!msg) throw new Error("safeEdit: cannot replace message without callback message");
+  // Send the replacement first so a failed send never blanks the panel.
+  const sent = await ctx.reply(text, (normalized ?? { parse_mode: "Markdown" }) as never);
+  const session = (ctx as { session?: { cmsPanelChatId?: number; cmsPanelMessageId?: number } })
+    .session;
+  if (session) {
+    session.cmsPanelChatId = sent.chat.id;
+    session.cmsPanelMessageId = sent.message_id;
+  }
   await safeDeleteMessage(ctx.api, msg.chat.id, msg.message_id);
-  await ctx.reply(text, (normalized ?? { parse_mode: "Markdown" }) as never);
 }
 
 /** Edit text in place, with caption / delete+send fallback and harmless double-click handling. */
@@ -189,8 +196,8 @@ export async function safeEditById(
     if (/there is no text in the message to edit|message can't be edited/i.test(desc)) {
       const ok = await tryCaption();
       if (ok) return;
-      await safeDeleteMessage(api, chatId, messageId);
       await api.sendMessage(chatId, text, normalized as never);
+      await safeDeleteMessage(api, chatId, messageId);
       return;
     }
     throw err;

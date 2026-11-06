@@ -628,14 +628,30 @@ export function convProductPickSubCategoryPlansKeyboard(
 
 export const convProductPickKeyboard = convProductPickCategoryContentsKeyboard;
 
+/** Max product rows per admin pick page (Telegram reply_markup size limit). */
+export const ADMIN_PRODUCT_PICK_PAGE_SIZE = 8;
+
 export function adminProductPickKeyboard(
   products: Array<Product & { category?: Category }>,
   mode: "price" | "delete" | "edit",
+  page = 0,
 ): InlineKeyboard {
+  const pageSize = ADMIN_PRODUCT_PICK_PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(products.length / pageSize));
+  const safePage = Math.min(Math.max(0, page), totalPages - 1);
+  const slice = products.slice(safePage * pageSize, (safePage + 1) * pageSize);
+
+  const pageCb = (p: number): string => {
+    if (mode === "price") return Callbacks.adminEditPriceMenuPage(p);
+    if (mode === "delete") return Callbacks.adminDelProductMenuPage(p);
+    // Flat edit list is unused in production; keep callback short if ever shown.
+    return `adm:prd:editm:p:${p}`;
+  };
+
   const kb = new InlineKeyboard();
   appendOneColumn(
     kb,
-    products.map((p) => {
+    slice.map((p) => {
       const price = Math.round(Number(p.price)).toLocaleString("en-US");
       const name = p.name.length > 36 ? `${p.name.slice(0, 35)}…` : p.name;
       const data =
@@ -652,6 +668,18 @@ export function adminProductPickKeyboard(
       };
     }),
   );
+
+  if (totalPages > 1) {
+    if (safePage > 0) {
+      kb.text("⬅️ قبل", pageCb(safePage - 1));
+    }
+    kb.text(`📄 ${safePage + 1}/${totalPages}`, pageCb(safePage));
+    if (safePage < totalPages - 1) {
+      kb.text("بعد ➡️", pageCb(safePage + 1));
+    }
+    kb.row();
+  }
+
   kb.text("🔙 بازگشت", Callbacks.adminCatalog);
   return kb;
 }
