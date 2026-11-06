@@ -145,6 +145,8 @@ model Product {
   /// JSON string array, e.g. ["Email","Password"]
   requiredFields         Json                    @default("[]")
   isActive               Boolean                 @default(true)
+  /// When true, supplier OOS still shows as purchasable; paid orders route to admin manual delivery.
+  forceManualFallback    Boolean                 @default(false)
   /// Admin-confirmed catalog placement — skip startup hard-reassign / title overrides.
   hierarchyLocked        Boolean                 @default(false)
   createdAt              DateTime                @default(now())
@@ -333,6 +335,7 @@ model DiscountCode {
 enum SupplierOrderStatus {
   PENDING
   PENDING_ADMIN_DISPATCH
+  PENDING_MANUAL_DELIVERY
   SUCCESS
   COMPLETED
   FAILED
@@ -445,6 +448,11 @@ model SupplierOrder {
   deliveryPayload   String?             @db.Text
   errorMessage      String?             @db.Text
   reconciled        Boolean             @default(false)
+  /// Purchase-log-group alert message (گزارش های خرید)
+  logGroupChatId    String?
+  logGroupMessageId Int?
+  /// Admin DM copies of the same alert [{ chatId, messageId }]
+  adminDmAlertRefs  Json?
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 

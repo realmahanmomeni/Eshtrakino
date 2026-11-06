@@ -1,0 +1,3 @@
+ALTER TABLE "SupplierOrder" ADD COLUMN IF NOT EXISTS "logGroupChatId" TEXT;
+ALTER TABLE "SupplierOrder" ADD COLUMN IF NOT EXISTS "logGroupMessageId" INTEGER;
+ALTER TABLE "SupplierOrder" ADD COLUMN IF NOT EXISTS "adminDmAlertRefs" JSONB;
