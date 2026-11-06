@@ -7,6 +7,10 @@ import { prisma } from "../../lib/prisma";
 import { formatToman } from "../../lib/money";
 import { provideCredentialsKeyboard } from "../../bot/keyboards/builders";
 import { discountService } from "../discount/DiscountService";
+import {
+  deliverProductToCustomer,
+  formatPlainTextDeliveryContentHtml,
+} from "./customerDeliveryMessage";
 
 function resolveFulfillmentType(
   productDeliveryType: DeliveryType,
@@ -66,17 +70,12 @@ export class FulfillmentService {
             .catch(console.error);
         }
 
-        await api.sendMessage(
-          tgId,
-          [
-            "✅ پرداخت شما تایید شد.",
-            "",
-            "🔑 *اطلاعات محصول شما:*",
-            "",
-            `\`${item.content}\``,
-          ].join("\n"),
-          { parse_mode: "Markdown" },
-        );
+        await deliverProductToCustomer(api, tgId, {
+          productName: invoice.product.name,
+          invoiceId: invoice.id,
+          durationDays: invoice.product.durationDays,
+          deliveryContentHtml: formatPlainTextDeliveryContentHtml(item.content),
+        });
       } else {
         await api.sendMessage(
           tgId,
@@ -91,6 +90,14 @@ export class FulfillmentService {
 
     if (deliveryType === DeliveryType.SUPPLIER_AUTO) {
       try {
+        const { shouldRoutePaidInvoiceToManualDelivery, manualFulfillmentService } =
+          await import("./ManualFulfillmentService.js");
+
+        if (await shouldRoutePaidInvoiceToManualDelivery(invoice.productId!)) {
+          await manualFulfillmentService.queuePendingManualDelivery(api, invoice.id);
+          return;
+        }
+
         const { canbosoDispatchService } = await import("../suppliers/CanbosoDispatchService.js");
         const { supplierManager } = await import("../suppliers/index.js");
 
