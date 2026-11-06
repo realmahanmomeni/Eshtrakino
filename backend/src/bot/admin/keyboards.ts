@@ -557,12 +557,29 @@ export function adminDeleteCategoriesKeyboard(categories: Category[]): InlineKey
         const label = `🔹 ${c.name}`;
         return {
           text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
-          data: Callbacks.adminDelCategory(c.id),
+          data: Callbacks.adminDelCategoryAsk(c.id),
         };
       }),
   );
   kb.text("🔙 بازگشت", Callbacks.adminCatalog);
   return kb;
+}
+
+export function adminConfirmDeactivateCategoryKeyboard(categoryId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("✅ بله، غیرفعال کن", Callbacks.adminDelCategoryConfirm(categoryId))
+    .row()
+    .text("❌ انصراف", Callbacks.adminDelCategoryMenu);
+}
+
+export function adminConfirmDeactivateProductKeyboard(
+  productId: number,
+  page: number,
+): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("✅ بله، غیرفعال کن", Callbacks.adminDelProductConfirm(productId, page))
+    .row()
+    .text("❌ انصراف", Callbacks.adminDelProductMenuPage(page));
 }
 
 function truncateLabel(name: string, max = 30): string {
@@ -659,7 +676,7 @@ export function adminProductPickKeyboard(
           ? Callbacks.adminEditPrice(p.id)
           : mode === "edit"
             ? Callbacks.adminEditProduct(p.id)
-            : Callbacks.adminDelProduct(p.id);
+            : Callbacks.adminDelProductAsk(p.id, safePage);
       const inactive = p.isActive === false ? " ⏸" : "";
       const label = `🔹 ${name} · ${price}${inactive}`;
       return {

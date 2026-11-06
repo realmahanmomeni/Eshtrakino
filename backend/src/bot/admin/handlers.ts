@@ -16,6 +16,8 @@ import {
   adminCmsPanelKeyboard,
   adminForceJoinKeyboard,
   adminDeleteCategoriesKeyboard,
+  adminConfirmDeactivateCategoryKeyboard,
+  adminConfirmDeactivateProductKeyboard,
   adminHomeKeyboard,
   adminHomeKeyboardAsync,
   adminPaymentListKeyboard,
@@ -1358,7 +1360,29 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     );
   });
 
-  admin.callbackQuery(/^adm:cat:del:(\d+)$/, async (ctx) => {
+  admin.callbackQuery(/^adm:cat:delask:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    const categories = await catalogService.listAllCategories();
+    const found = categories.find((c) => c.id === id);
+    if (!found) {
+      await ctx.answerCallbackQuery({ text: "دسته یافت نشد", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await safeEdit(
+      ctx,
+      [
+        "⚠️ *تایید غیرفعال‌سازی دسته*",
+        "",
+        `آیا مطمئن هستید دسته «*${found.name}*» غیرفعال شود؟`,
+        "",
+        "این عمل دسته را از فروشگاه پنهان می‌کند.",
+      ].join("\n"),
+      adminConfirmDeactivateCategoryKeyboard(id),
+    );
+  });
+
+  admin.callbackQuery(/^adm:cat:delok:(\d+)$/, async (ctx) => {
     const id = Number(ctx.match![1]);
     const cat = await catalogService.deleteCategory(id);
     await ctx.answerCallbackQuery({ text: "حذف شد" });
@@ -1739,7 +1763,30 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     await presentAdminProductPick(ctx, "delete", page);
   });
 
-  admin.callbackQuery(/^adm:prd:del:(\d+)$/, async (ctx) => {
+  admin.callbackQuery(/^adm:prd:delask:(\d+):(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match![1]);
+    const page = Number(ctx.match![2]);
+    const product = await catalogService.getProduct(id, false);
+    if (!product) {
+      await ctx.answerCallbackQuery({ text: "محصول یافت نشد", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await safeEdit(
+      ctx,
+      [
+        "⚠️ *تایید غیرفعال‌سازی محصول*",
+        "",
+        `آیا مطمئن هستید محصول زیر غیرفعال شود؟`,
+        "",
+        `📦 *${product.name}*`,
+        `🆔 #${product.id}`,
+      ].join("\n"),
+      adminConfirmDeactivateProductKeyboard(id, page),
+    );
+  });
+
+  admin.callbackQuery(/^adm:prd:delok:(\d+):(\d+)$/, async (ctx) => {
     const id = Number(ctx.match![1]);
     const product = await catalogService.deleteProduct(id);
     await ctx.answerCallbackQuery({ text: "حذف شد" });
