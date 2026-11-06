@@ -1,6 +1,7 @@
 import type { CredentialRequirement, DeliveryType } from "@prisma/client";
 import type { EshtrakinoConversation, SessionContext } from "../context";
 import { catalogService } from "../../services/catalog/CatalogService";
+import { manualFulfillmentService } from "../../services/fulfillment/ManualFulfillmentService";
 import { inventoryService } from "../../services/inventory/InventoryService";
 import { prisma } from "../../lib/prisma";
 import { formatToman, parsePrice } from "../../lib/money";
@@ -861,6 +862,33 @@ export async function editProductConversation(
         return;
       }
 
+      // Manual fallback toggle (must run inside conversation — outer admin handler does not get this update)
+      const toggleFallbackMatch = /^adm:prd:toggle_fallback:(\d+)$/.exec(action);
+      if (toggleFallbackMatch) {
+        const toggleId = Number(toggleFallbackMatch[1]);
+        try {
+          const enabled = await conversation.external(() =>
+            manualFulfillmentService.toggleProductManualFallback(toggleId),
+          );
+          await ensurePanel(
+            ctx,
+            enabled
+              ? "✅ فالبک دستی فعال شد — محصول در فروشگاه می‌ماند حتی اگر تامین‌کننده ناموجود باشد."
+              : "✅ فالبک دستی غیرفعال شد — اگر تامین‌کننده ناموجود باشد محصول از فروشگاه مخفی می‌شود.",
+            emptyKeyboard,
+            panel,
+          );
+        } catch (err) {
+          await ensurePanel(
+            ctx,
+            `⚠️ ${err instanceof Error ? err.message : "خطا در تغییر فالبک دستی"}`,
+            emptyKeyboard,
+            panel,
+          );
+        }
+        continue;
+      }
+
       // Handle Edit Product SubCategory
       if (action === ConvCb.editProductSubCategory) {
         const subCategories = await conversation.external(async () =>
@@ -1053,16 +1081,35 @@ export async function editProductConversation(
             buildSupplierMarginSummaryHtml(productId!),
           );
           if (summary) {
+            const fallbackOn = await conversation.external(async () => {
+              const row = await prisma.product.findUnique({
+                where: { id: productId! },
+                select: { forceManualFallback: true },
+              });
+              return row?.forceManualFallback === true;
+            });
             const marginPick = await waitCallbackOnPanel(
               conversation,
               ctx,
               summary,
-              supplierMarginPriceKeyboard(productId!),
+              supplierMarginPriceKeyboard(productId!, {
+                forceManualFallback: fallbackOn,
+              }),
               panel,
               { parse_mode: "HTML" },
             );
             panel = marginPick.panel;
             const data = marginPick.data;
+            if (data && /^adm:prd:toggle_fallback:(\d+)$/.test(data)) {
+              try {
+                await conversation.external(() =>
+                  manualFulfillmentService.toggleProductManualFallback(productId!),
+                );
+              } catch (err) {
+                console.error("[EditProduct] margin toggle fallback failed:", err);
+              }
+              continue;
+            }
             if (
               data &&
               (data.startsWith("adm:prd:margin:") ||

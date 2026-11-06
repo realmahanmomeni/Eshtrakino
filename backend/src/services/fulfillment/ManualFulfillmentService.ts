@@ -260,6 +260,12 @@ export class ManualFulfillmentService {
     return { ok: true };
   }
 
+  /**
+   * Toggle forceManualFallback.
+   * ON  → keep product active (sellable; OOS orders go to manual delivery).
+   * OFF → re-check live supplier stock; if OOS/unavailable, deactivate immediately
+   *       so the product is hidden from customer lists until restocked.
+   */
   async toggleProductManualFallback(productId: number): Promise<boolean> {
     const product = await prisma.product.findUnique({
       where: { id: productId },
@@ -270,14 +276,33 @@ export class ManualFulfillmentService {
     }
 
     const next = !product.forceManualFallback;
+    if (next) {
+      await prisma.product.update({
+        where: { id: productId },
+        data: { forceManualFallback: true, isActive: true },
+      });
+      console.log(
+        `[ManualFallback] Product #${productId} fallback ON — kept/forced active`,
+      );
+      return true;
+    }
+
+    const stock = await fetchLiveSupplierStock(productId);
+    const inStock = stock != null && stock > 0;
     await prisma.product.update({
       where: { id: productId },
       data: {
-        forceManualFallback: next,
-        ...(next ? { isActive: true } : {}),
+        forceManualFallback: false,
+        isActive: inStock,
       },
     });
-    return next;
+    console.log(
+      `[ManualFallback] Product #${productId} fallback OFF — ` +
+        (inStock
+          ? `supplier stock=${stock}, left active`
+          : `supplier OOS/unavailable (stock=${stock ?? "null"}), deactivated`),
+    );
+    return false;
   }
 }
 

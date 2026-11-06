@@ -315,6 +315,19 @@ export class CanbosoSyncService {
         data: { isActive: shouldBeActive },
       });
       changes += 1;
+      if (shouldBeActive) {
+        console.log(
+          `[CanbosoSync] Product #${productId} activated — ` +
+            (remoteInStock
+              ? "supplier back in stock"
+              : "forceManualFallback keeps it visible while OOS"),
+        );
+      } else {
+        console.log(
+          `[CanbosoSync] Product #${productId} deactivated — supplier OOS/unavailable ` +
+            `(stock=${remote.stock}, isAvailable=${remote.isAvailable}, fallback=off)`,
+        );
+      }
     }
 
     if (remoteInStock && fullProduct?.forceManualFallback) {
