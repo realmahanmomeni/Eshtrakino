@@ -219,7 +219,7 @@ export class SupplierPendingImportService {
           supplierCostUsd,
           description,
           requiredFields: remote.requiredFields,
-          stock: remote.stock,
+          stock: remote.stock ?? 0,
           isAvailable: remote.isAvailable,
           remoteSnapshot: remote.raw as object,
         },
@@ -250,7 +250,7 @@ export class SupplierPendingImportService {
         displayName,
         brandName: remote.brandName ?? null,
         supplierCostUsd,
-        stock: remote.stock,
+        stock: remote.stock ?? 0,
         isAvailable: remote.isAvailable,
         remoteSnapshot: remote.raw as object,
       },
@@ -457,7 +457,9 @@ export class SupplierPendingImportService {
           categoryId: placement.categoryId,
           subCategoryId: placement.subCategoryId,
           deliveryType: DeliveryType.SUPPLIER_AUTO,
-          isActive: pending.stock > 0 && pending.isAvailable,
+          // `stock` is 0 both for a real zero and for an omitted count.
+          // `isAvailable` is the supplier flag, so unknown-but-listed SKUs stay active.
+          isActive: pending.isAvailable,
           hierarchyLocked: true,
           description: pending.description,
           requiredFields: pending.requiredFields as Prisma.InputJsonValue,

@@ -125,7 +125,7 @@ export async function resolveCmsKeyboard(
       return mainMenuKeyboard(pending, isAdmin, layout);
 
     case "shop": {
-      const categories = await catalogService.listShopCategories();
+      const categories = await catalogService.listCategoriesWithActiveProducts();
       if (categories.length === 0) {
         return mainMenuKeyboard(false, isAdmin, layout);
       }
@@ -314,7 +314,7 @@ export async function presentCmsPage(
   }
 
   if (pageKey === "shop") {
-    const categories = await catalogService.listActiveCategories();
+    const categories = await catalogService.listCategoriesWithActiveProducts();
     let caption = withBanner(baseText, banner);
     let kb: InlineKeyboard;
     const isAdmin = await hasAnyAdminAccess(ctx.from.id);

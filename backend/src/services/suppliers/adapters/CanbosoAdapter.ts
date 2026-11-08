@@ -27,6 +27,7 @@ import {
 } from "../canboso/canbosoCooldownState";
 import { logCanbosoHttpRequest } from "../canboso/canbosoRequestLog";
 import { serializeCanbosoDeliveryPayload } from "../../fulfillment/canbosoDeliveryFormat";
+import { resolveCanbosoStockAndAvailability } from "../canboso/canbosoStock";
 
 export type CanbosoBalance = {
   balance: number;
@@ -60,7 +61,8 @@ export type CanbosoCatalogProduct = {
   /** Brand/service title (parent product name) */
   brandName?: string;
   name: string;
-  stock: number;
+  /** null when the supplier did not send a numeric count (do not treat as 1). */
+  stock: number | null;
   isAvailable: boolean;
   supplierPriceToman: number;
   /** Normalized supplier cost in USD (from price_usd / cost / Toman conversion). */
@@ -99,15 +101,6 @@ function pickNumber(...values: unknown[]): number | undefined {
   return undefined;
 }
 
-function pickBool(...values: unknown[]): boolean | undefined {
-  for (const v of values) {
-    if (typeof v === "boolean") return v;
-    if (v === 1 || v === "1" || v === "true" || v === "yes") return true;
-    if (v === 0 || v === "0" || v === "false" || v === "no") return false;
-  }
-  return undefined;
-}
-
 function pickString(...values: unknown[]): string | undefined {
   for (const v of values) {
     if (typeof v === "string" && v.trim() !== "") return v.trim();
@@ -142,48 +135,6 @@ function extractProductList(body: unknown): unknown[] {
   }
 
   return [];
-}
-
-function resolveStockAndAvailability(row: Record<string, unknown>): {
-  stock: number;
-  isAvailable: boolean;
-} {
-  const availability = asRecord(row.availability);
-  const availableCount =
-    pickNumber(
-      availability?.available,
-      row.stock,
-      row.stock_count,
-      row.inventory_count,
-      row.count,
-      row.qty,
-      row.quantity,
-    ) ?? 0;
-
-  const stock = Math.max(0, Math.round(availableCount));
-  const isAvailable = stock > 0;
-
-  if (availability?.available != null || row.stock != null || row.stock_count != null) {
-    return { stock, isAvailable };
-  }
-
-  const isActiveFlag = pickBool(row.is_active, row.isActive, row.active);
-  const availableFlag = pickBool(
-    row.available,
-    row.is_available,
-    row.isAvailable,
-    row.in_stock,
-    row.inStock,
-  );
-
-  if (isActiveFlag === true || availableFlag === true) {
-    return { stock: Math.max(stock, 1), isAvailable: true };
-  }
-  if (isActiveFlag === false || availableFlag === false) {
-    return { stock: 0, isAvailable: false };
-  }
-
-  return { stock, isAvailable: stock > 0 };
 }
 
 function extractRequiredFieldNames(row: Record<string, unknown>): string[] {
@@ -316,7 +267,7 @@ function mapCanbosoProductRow(
     pickString(row.name, row.title, row.product_name, row.plan_name, row.label) ??
     productId;
 
-  const { stock, isAvailable } = resolveStockAndAvailability(row);
+  const { stock, isAvailable } = resolveCanbosoStockAndAvailability(row);
 
   const priceObj = asRecord(row.price);
   const supplierPriceToman =
@@ -855,7 +806,10 @@ export class CanbosoAdapter implements SupplierAdapter {
     const body: unknown = await response.json().catch(() => null);
     const mapped = expandCanbosoCatalogEntries(extractProductList(body));
 
-    if (mapped.length > 0 && mapped.every((p) => !p.isAvailable && p.stock <= 0)) {
+    if (
+      mapped.length > 0 &&
+      mapped.every((p) => !p.isAvailable && (p.stock == null || p.stock <= 0))
+    ) {
       console.warn(
         "[CanbosoAdapter] All products parsed as unavailable — check API field mapping.",
       );
@@ -1065,7 +1019,7 @@ export class CanbosoAdapter implements SupplierAdapter {
           variantKey: p.variantId ?? p.productId,
           name: p.name,
           price: p.supplierPriceToman,
-          stock: p.stock,
+          stock: p.stock ?? undefined,
         })),
       };
     });
@@ -1095,7 +1049,7 @@ export class CanbosoAdapter implements SupplierAdapter {
         variantKey: p.variantId ?? p.productId,
         name: p.name,
         price: p.supplierPriceToman,
-        stock: p.stock,
+        stock: p.stock ?? undefined,
       })),
     };
   }

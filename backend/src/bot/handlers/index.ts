@@ -355,7 +355,9 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         "",
         "این محصول یافت نشد یا غیرفعال است.",
       ].join("\n");
-      const invalidKb = categoriesKeyboard(await catalogService.listActiveCategories());
+      const invalidKb = categoriesKeyboard(
+        await catalogService.listCategoriesWithActiveProducts(),
+      );
       if (!forceReply && ctx.callbackQuery) {
         await safePresentShopText(ctx, invalidMsg, {
           parse_mode: "Markdown",

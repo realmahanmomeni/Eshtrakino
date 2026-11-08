@@ -37,7 +37,11 @@ import {
   adminSuppliersKeyboard,
   adminSuppliersKeyboardAsync,
 } from "./keyboards";
-import { renderAdminProductCardText, getDeliveryModeCaption } from "./catalog";
+import {
+  renderAdminProductCardText,
+  getDeliveryModeCaption,
+  resolveAdminCardStockCount,
+} from "./catalog";
 import { exitAllConversations } from "../utils/conversations";
 import { Callbacks } from "../keyboards/callbacks";
 import { catalogService } from "../../services/catalog/CatalogService";
@@ -1559,10 +1563,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     ctx.session.adminTargetId = id;
     ctx.session.adminTargetType = "product";
 
-    let stockCount: number | null = null;
-    if (product.deliveryType === "READY") {
-      stockCount = await inventoryService.countAvailable(id);
-    }
+    const stockCount = await resolveAdminCardStockCount(product);
 
     const panelText =
       (ctx.callbackQuery.message?.text ?? "") +
@@ -1625,10 +1626,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       ctx.session.adminTargetId = id;
       ctx.session.adminTargetType = "product";
 
-      let stockCount: number | null = null;
-      if (product.deliveryType === "READY") {
-        stockCount = await inventoryService.countAvailable(id);
-      }
+      const stockCount = await resolveAdminCardStockCount(product);
 
       await safeEdit(
         ctx,

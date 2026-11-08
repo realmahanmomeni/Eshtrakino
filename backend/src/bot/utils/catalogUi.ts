@@ -62,8 +62,12 @@ export async function presentShopCategories(
   let categories = await catalogService.listShopCategories();
 
   if (!showOos) {
+    const withActiveProducts = new Set(
+      (await catalogService.listCategoriesWithActiveProducts()).map((c) => c.id),
+    );
     const visible = [];
     for (const c of categories) {
+      if (!withActiveProducts.has(c.id)) continue;
       if (await categoryHasShopAvailableProduct(c.id)) visible.push(c);
     }
     categories = visible;
@@ -101,7 +105,10 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
   if (!category) {
     await safePresentShopText(ctx, "⚠️ *دسته بندی نامعتبر*", {
       parse_mode: "Markdown",
-      reply_markup: categoriesKeyboard(await catalogService.listShopCategories(), 2),
+      reply_markup: categoriesKeyboard(
+        await catalogService.listCategoriesWithActiveProducts(),
+        2,
+      ),
     });
     return;
   }
@@ -116,13 +123,18 @@ export async function presentCategoryView(ctx: BotContext, categoryId: number): 
       ].join("\n"),
       {
         parse_mode: "Markdown",
-        reply_markup: categoriesKeyboard(await catalogService.listShopCategories(), 2),
+        reply_markup: categoriesKeyboard(
+          await catalogService.listCategoriesWithActiveProducts(),
+          2,
+        ),
       },
     );
     return;
   }
 
-  const subCategories = await catalogService.listDisplaySubCategoriesByCategory(categoryId);
+  const subCategories = showOos
+    ? await catalogService.listDisplaySubCategoriesByCategory(categoryId)
+    : await catalogService.listCustomerSubCategoriesByCategory(categoryId);
   const allProducts = await catalogService.listDisplayProductsByCategory(categoryId);
   const standaloneProducts = allProducts.filter((p) => p.subCategoryId == null);
 

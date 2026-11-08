@@ -5,7 +5,7 @@ import { supplierOrderAlertService } from "../suppliers/SupplierOrderAlertServic
 import {
   isInternalEshtrakinoFulfillment,
 } from "../catalog/catalogAvailability";
-import { fetchLiveSupplierStock } from "../catalog/profitMarginService";
+import { fetchLiveSupplierStock, isLiveSupplierInStock } from "../catalog/profitMarginService";
 import { canbosoSyncService } from "../suppliers/CanbosoSyncService";
 import {
   deliverProductToCustomer,
@@ -287,8 +287,10 @@ export class ManualFulfillmentService {
       return true;
     }
 
-    const stock = await fetchLiveSupplierStock(productId);
-    const inStock = stock != null && stock > 0;
+    const [stock, inStock] = await Promise.all([
+      fetchLiveSupplierStock(productId),
+      isLiveSupplierInStock(productId),
+    ]);
     await prisma.product.update({
       where: { id: productId },
       data: {

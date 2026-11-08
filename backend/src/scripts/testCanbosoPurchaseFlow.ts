@@ -93,7 +93,9 @@ function validateSerializedPayload(payload: Record<string, unknown>): {
 function pickFirstActiveProduct(
   products: CanbosoCatalogProduct[],
 ): CanbosoCatalogProduct | null {
-  const active = products.filter((p) => p.isAvailable && p.stock > 0);
+  const active = products.filter(
+    (p) => p.isAvailable && p.stock != null && p.stock > 0,
+  );
   return active[0] ?? products[0] ?? null;
 }
 

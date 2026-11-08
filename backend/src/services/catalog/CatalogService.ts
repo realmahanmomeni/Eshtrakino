@@ -38,6 +38,36 @@ export class CatalogService {
     });
   }
 
+  /**
+   * Customer shop categories: active categories that contain at least one active product.
+   * Empty categories (for example legacy Telegram Stars / Premium with no live plans) stay hidden.
+   * Admin catalog lists keep using listActiveCategories / listAllCategories.
+   */
+  async listCategoriesWithActiveProducts(): Promise<Category[]> {
+    return prisma.category.findMany({
+      where: {
+        isActive: true,
+        products: { some: { isActive: true } },
+      },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  /**
+   * Customer subcategory list: active subcategories that contain at least one active product.
+   */
+  async listCustomerSubCategoriesByCategory(categoryId: number): Promise<SubCategoryRecord[]> {
+    return (prisma as any).subCategory.findMany({
+      where: {
+        categoryId,
+        isActive: true,
+        products: { some: { isActive: true } },
+      },
+      include: { category: true },
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+  }
+
   /** Shop home — ordered short categories for 2-column mobile layout. */
   async listShopCategories(): Promise<Category[]> {
     const { sortShopCategories, SHOP_CATEGORY_SPECS } = await import("./whiteLabelCatalog.js");

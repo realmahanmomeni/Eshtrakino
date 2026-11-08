@@ -24,7 +24,11 @@ import {
   buildSupplierMarginSummaryHtml,
   supplierMarginPriceKeyboard,
 } from "./supplierPriceAdmin";
-import { isSupplierMarginAdminProduct } from "../../services/catalog/profitMarginService";
+import {
+  fetchSupplierStockCountForAdmin,
+  isSupplierMarginAdminProduct,
+} from "../../services/catalog/profitMarginService";
+import { formatAdminSupplierStockLabel } from "../../services/suppliers/canboso/canbosoStock";
 import {
   adminCatalogKeyboard,
   adminSubCategoriesKeyboard,
@@ -55,6 +59,25 @@ export function getDeliveryModeCaption(deliveryType: string): string {
   return `📦 نوع تحویل: [ ${modeLabel} ]`;
 }
 
+/**
+ * Stock shown on the admin product card.
+ * Supplier products: null means the remote count is unknown («نامشخص»).
+ * Ready-stock products: local unsold count. Other products: undefined (line omitted).
+ */
+export async function resolveAdminCardStockCount(product: {
+  id: number;
+  deliveryType: string;
+  supplierProductMapping?: { id: number } | null;
+}): Promise<number | null | undefined> {
+  if (product.supplierProductMapping) {
+    return fetchSupplierStockCountForAdmin(product.id);
+  }
+  if (product.deliveryType === "READY") {
+    return inventoryService.countAvailable(product.id);
+  }
+  return undefined;
+}
+
 export function renderAdminProductCardText(
   product: any,
   stockCount?: number | null,
@@ -74,8 +97,12 @@ export function renderAdminProductCardText(
       ? `💵 قیمت: *${formatToman(product.price)}* ($${prod.usdPrice})`
       : `💵 قیمت: *${formatToman(product.price)}*`;
 
-  const stockLine =
-    stockCount != null ? `\n📦 موجودی فعلی انبار: *${stockCount}*` : "";
+  const supplierMapped = product.supplierProductMapping != null;
+  const stockLine = supplierMapped
+    ? `\n📦 موجودی: *${formatAdminSupplierStockLabel(stockCount)}*`
+    : stockCount != null
+      ? `\n📦 موجودی فعلی انبار: *${stockCount}*`
+      : "";
 
   const shopStatusLine =
     product.isActive === false
@@ -805,15 +832,9 @@ export async function editProductConversation(
         return;
       }
 
-      const stockCount =
-        product.deliveryType === "READY"
-          ? await conversation.external(async () => inventoryService.countAvailable(productId!))
-          : 0;
-
-      const stockLine =
-        product.deliveryType === "READY"
-          ? `📦 موجودی انبار: *${stockCount}*`
-          : null;
+      const stockCount = await conversation.external(() =>
+        resolveAdminCardStockCount(product),
+      );
 
       const durationLine =
         product.durationDays != null

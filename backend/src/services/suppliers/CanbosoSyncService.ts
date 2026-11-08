@@ -27,6 +27,7 @@ import { supplierPendingImportService } from "./SupplierPendingImportService";
 import { SupplierManager } from "./SupplierManager";
 import { sanitizeCustomerCatalogText } from "../../bot/utils/catalogUi";
 import { resolveAutomaticLocalProductName } from "./canboso/supplierProductNameOverrides";
+import { isCanbosoRemoteInStock } from "./canboso/canbosoStock";
 
 export const CANBOSO_SUPPLIER_NAME = "Canboso";
 
@@ -300,7 +301,7 @@ export class CanbosoSyncService {
     supplierProductKey: string,
   ): Promise<number> {
     let changes = 0;
-    const remoteInStock = remote.stock > 0 && remote.isAvailable;
+    const remoteInStock = isCanbosoRemoteInStock(remote);
 
     const fullProduct = await prisma.product.findUnique({
       where: { id: productId },
@@ -325,7 +326,7 @@ export class CanbosoSyncService {
       } else {
         console.log(
           `[CanbosoSync] Product #${productId} deactivated — supplier OOS/unavailable ` +
-            `(stock=${remote.stock}, isAvailable=${remote.isAvailable}, fallback=off)`,
+            `(stock=${remote.stock ?? "null"}, isAvailable=${remote.isAvailable}, fallback=off)`,
         );
       }
     }
@@ -543,7 +544,7 @@ export class CanbosoSyncService {
         categoryId: placement.categoryId,
         subCategoryId: placement.subCategoryId ?? null,
         deliveryType: DeliveryType.SUPPLIER_AUTO,
-        isActive: remote.stock > 0 && remote.isAvailable,
+        isActive: isCanbosoRemoteInStock(remote),
         description: remote.description?.trim()
           ? sanitizeCustomerCatalogText(remote.description).trim()
           : "تحویل دیجیتال از طریق اشتراکینو",

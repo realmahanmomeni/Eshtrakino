@@ -9,6 +9,7 @@ import { exchangeRateService, convertUsdToToman } from "../exchangeRateService";
 import { isStarsCatalog } from "./starsPricingService";
 import { isInternalEshtrakinoFulfillment } from "./catalogAvailability";
 import type { CanbosoCatalogProduct } from "../suppliers/adapters/CanbosoAdapter";
+import { isCanbosoRemoteInStock } from "../suppliers/canboso/canbosoStock";
 import { supplierCostUsdFromRemote } from "../suppliers/canbosoCost";
 
 export type MarginPriceBreakdown = {
@@ -185,18 +186,57 @@ async function fetchMappedCanbosoRemoteProduct(
   return { mapping, remote };
 }
 
-export async function fetchLiveSupplierStock(productId: number): Promise<number | null> {
+type LiveSupplierStockState = {
+  /** null when the supplier omitted the count, or the SKU is missing from the catalog. */
+  stock: number | null;
+  /** True when the supplier still lists the SKU as purchasable (count may be unknown). */
+  inStock: boolean;
+};
+
+async function readLiveSupplierStockState(productId: number): Promise<LiveSupplierStockState> {
   const e2eMock = readE2eMockSupplierStock();
   if (e2eMock !== undefined) {
-    return e2eMock;
+    return { stock: e2eMock, inStock: e2eMock != null && e2eMock > 0 };
   }
 
   const resolved = await fetchMappedCanbosoRemoteProduct(productId, "checkout-stock");
-  if (!resolved) return null;
+  if (!resolved) return { stock: null, inStock: false };
 
   const { remote } = resolved;
-  if (!remote.isAvailable || remote.stock <= 0) return 0;
-  return Math.max(0, Math.round(remote.stock));
+  if (remote.stock == null) {
+    return {
+      stock: remote.isAvailable ? null : 0,
+      inStock: remote.isAvailable,
+    };
+  }
+
+  const stock = Math.max(0, Math.round(remote.stock));
+  const inStock = isCanbosoRemoteInStock({ stock, isAvailable: remote.isAvailable });
+  return { stock: inStock ? stock : 0, inStock };
+}
+
+export async function fetchLiveSupplierStock(productId: number): Promise<number | null> {
+  return (await readLiveSupplierStockState(productId)).stock;
+}
+
+/**
+ * Admin product card. Returns the supplier's numeric count, or null when that
+ * count was not reported (`stock=null` in sync logs). Never invents 1.
+ */
+export async function fetchSupplierStockCountForAdmin(productId: number): Promise<number | null> {
+  const e2eMock = readE2eMockSupplierStock();
+  if (e2eMock !== undefined) return e2eMock;
+
+  const resolved = await fetchMappedCanbosoRemoteProduct(productId, "admin-stock");
+  if (!resolved || resolved.remote.stock == null || !Number.isFinite(resolved.remote.stock)) {
+    return null;
+  }
+  return Math.max(0, Math.round(resolved.remote.stock));
+}
+
+/** Whether turning manual fallback off should leave the product active. */
+export async function isLiveSupplierInStock(productId: number): Promise<boolean> {
+  return (await readLiveSupplierStockState(productId)).inStock;
 }
 
 /** Same USD extraction as `CanbosoSyncService` (`supplierCostUsdFromRemote` + bulk catalog). */
