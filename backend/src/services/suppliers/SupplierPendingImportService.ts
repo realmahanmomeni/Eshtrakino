@@ -22,6 +22,7 @@ import {
   supplierKeysFromRemote,
 } from "./supplierImportClassification";
 import { supplierCostUsdFromRemote } from "./canbosoCost";
+import { QUANTUM_SUPPLIER_NAME } from "./quantumvault/quantumCatalog";
 import { InlineKeyboard } from "grammy";
 import { sendMessageThrottled } from "../../lib/telegramSend";
 import {
@@ -60,6 +61,14 @@ export async function buildPendingImportSummaryHtml(
   const usdRate = await exchangeRateService.getUsdToTomanRate();
   const sellingToman = convertUsdToToman(sellingUsd, usdRate);
   const safeName = escapeHtml(formatPendingDisplayName(row.displayName));
+  const supplier = await prisma.supplier.findUnique({
+    where: { id: row.supplierId },
+    select: { name: true },
+  });
+  const supplierName = escapeHtml(supplier?.name ?? "تامین‌کننده");
+  const folderLine = row.remoteFolder?.trim()
+    ? [`📁 پوشه تامین‌کننده: <b>${escapeHtml(row.remoteFolder.trim())}</b>`]
+    : [];
   const statusLabel =
     row.status === SupplierPendingImportStatus.PENDING
       ? "⏳ در انتظار بررسی"
@@ -68,9 +77,11 @@ export async function buildPendingImportSummaryHtml(
         : "✅ تایید شده";
 
   return [
-    "🆕 <b>محصول جدید از تامین‌کننده (Canboso)</b>",
+    `🆕 <b>محصول جدید از تامین‌کننده (${supplierName})</b>`,
     "",
     `📦 نام: <b>${safeName}</b>`,
+    `🏭 تامین‌کننده: <b>${supplierName}</b>`,
+    ...folderLine,
     `💵 قیمت خرید: <b>$${row.supplierCostUsd.toFixed(4)}</b>`,
     `📈 درصد سود: <b>${margin}%</b>`,
     `🏷 قیمت فروش: <b>$${sellingUsd.toFixed(4)}</b> — <b>${Math.round(sellingToman).toLocaleString("fa-IR")}</b> تومان`,
@@ -216,6 +227,7 @@ export class SupplierPendingImportService {
           supplierVariantKey,
           displayName,
           brandName: remote.brandName ?? null,
+          remoteFolder: remoteFolderFromCatalog(remote),
           supplierCostUsd,
           description,
           requiredFields: remote.requiredFields,
@@ -249,6 +261,7 @@ export class SupplierPendingImportService {
       data: {
         displayName,
         brandName: remote.brandName ?? null,
+        remoteFolder: remoteFolderFromCatalog(remote),
         supplierCostUsd,
         stock: remote.stock ?? 0,
         isAvailable: remote.isAvailable,
@@ -261,12 +274,15 @@ export class SupplierPendingImportService {
   async flushPendingAdminNotifications(api: Api): Promise<void> {
     const rows = await prisma.supplierPendingImport.findMany({
       where: { status: SupplierPendingImportStatus.PENDING },
+      include: { supplier: { select: { name: true } } },
       orderBy: { id: "asc" },
     });
     const adminIds = await getCatalogAdminTelegramIds();
     if (adminIds.length === 0) return;
 
     for (const row of rows) {
+      // Quantum sends one summary or one batched message per sync, never one DM per SKU.
+      if (row.supplier.name === QUANTUM_SUPPLIER_NAME) continue;
       await this.deliverPendingNotificationsToAdmins(api, row.id, adminIds);
     }
   }
@@ -472,6 +488,7 @@ export class SupplierPendingImportService {
           supplierId: pending.supplierId,
           supplierProductKey: pending.supplierProductKey,
           supplierVariantKey: pending.supplierVariantKey || null,
+          supplierOfferGroup: offerGroupFromSnapshot(pending.remoteSnapshot),
           isAutoPurchase: true,
         },
       });
@@ -496,6 +513,70 @@ export class SupplierPendingImportService {
     };
   }
 
+  /**
+   * Approve every pending Quantum (or other) SKU in one remote folder into the
+   * category stored on SupplierCategoryMapping.
+   */
+  async approvePendingFolder(
+    mappingId: number,
+    reviewerTelegramId: bigint,
+  ): Promise<{ ok: boolean; message: string; approved: number }> {
+    const mapping = await prisma.supplierCategoryMapping.findUnique({
+      where: { id: mappingId },
+      include: { category: true, subCategory: true },
+    });
+    if (!mapping || !mapping.category.isActive) {
+      return { ok: false, message: "پیشنهاد دسته‌بندی این پوشه پیدا نشد.", approved: 0 };
+    }
+
+    if (mapping.subCategoryId == null) {
+      const subCount = await prisma.subCategory.count({
+        where: { categoryId: mapping.categoryId, isActive: true },
+      });
+      if (subCount > 0) {
+        return {
+          ok: false,
+          message: "برای این پوشه زیردسته در جدول پیشنهاد ثبت نشده است.",
+          approved: 0,
+        };
+      }
+    }
+
+    const rows = await prisma.supplierPendingImport.findMany({
+      where: {
+        supplierId: mapping.supplierId,
+        status: SupplierPendingImportStatus.PENDING,
+        remoteFolder: { equals: mapping.remoteFolder, mode: "insensitive" },
+      },
+      orderBy: { id: "asc" },
+    });
+    if (rows.length === 0) {
+      return { ok: false, message: "محصول در انتظاری برای این پوشه نیست.", approved: 0 };
+    }
+
+    let approved = 0;
+    for (const row of rows) {
+      await prisma.supplierPendingImport.update({
+        where: { id: row.id },
+        data: {
+          categoryId: mapping.categoryId,
+          subCategoryId: mapping.subCategoryId,
+        },
+      });
+      const result = await this.approveAndCreateProduct(row.id, reviewerTelegramId);
+      if (result.ok) approved += 1;
+    }
+
+    return {
+      ok: approved > 0,
+      approved,
+      message:
+        approved > 0
+          ? `${approved} محصول از پوشه «${mapping.remoteFolder}» به فروشگاه اضافه شد.`
+          : "هیچ محصولی تایید نشد.",
+    };
+  }
+
   async getPendingMarginPercent(row: SupplierPendingImport): Promise<number> {
     if (
       row.profitMarginPercent != null &&
@@ -506,6 +587,20 @@ export class SupplierPendingImportService {
     }
     return getDefaultProfitMarginPercent();
   }
+}
+
+function remoteFolderFromCatalog(remote: CanbosoCatalogProduct): string | null {
+  if (!remote.raw || typeof remote.raw !== "object" || Array.isArray(remote.raw)) return null;
+  const folder = (remote.raw as { folder?: unknown }).folder;
+  if (typeof folder !== "string") return null;
+  const trimmed = folder.trim();
+  return trimmed ? trimmed.slice(0, 200) : null;
+}
+
+function offerGroupFromSnapshot(snapshot: unknown): string | null {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const value = (snapshot as { offerGroup?: unknown }).offerGroup;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export const supplierPendingImportService = new SupplierPendingImportService();

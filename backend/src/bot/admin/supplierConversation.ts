@@ -322,6 +322,7 @@ export async function mapSupplierProductConversation(
             select: {
               id: true,
               supplierProductKey: true,
+              supplier: { select: { name: true } },
             },
           },
         },
@@ -338,6 +339,7 @@ export async function mapSupplierProductConversation(
           ? {
               id: p.supplierProductMapping.id,
               supplierProductKey: p.supplierProductMapping.supplierProductKey,
+              supplierName: p.supplierProductMapping.supplier.name,
             }
           : null,
       }));
@@ -351,7 +353,9 @@ export async function mapSupplierProductConversation(
     const prodKb = new InlineKeyboard();
     for (const p of products) {
       const mark = p.supplierProductMapping ? "🔄" : (p.deliveryType === "SUPPLIER_AUTO" ? "🤖" : "📦");
-      const sub = p.supplierProductMapping ? ` (مپ شده: ${p.supplierProductMapping.supplierProductKey})` : "";
+      const sub = p.supplierProductMapping
+        ? ` (${p.supplierProductMapping.supplierName}: ${p.supplierProductMapping.supplierProductKey})`
+        : "";
       const label = `${mark} ${p.name}${sub}`;
       prodKb.text(label.length > 50 ? `${label.slice(0, 48)}…` : label, `conv:map:p:${p.id}`).row();
     }

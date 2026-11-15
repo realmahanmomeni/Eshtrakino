@@ -10,6 +10,7 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { prisma } from "../../lib/prisma";
 import { INVOICE_TTL_MS } from "../../config/env";
 import { formatToman } from "../../lib/money";
+import { stripSupplierNames } from "../../bot/utils/customerSupplierText";
 import { exchangeRateService, convertUsdToToman } from "../exchangeRateService";
 
 export const OPEN_INVOICE_STATUSES: InvoiceStatus[] = [
@@ -366,7 +367,8 @@ export class InvoiceService {
     product?: { name: string } | null;
   }): string {
     if (invoice.isWalletTopUp) return "شارژ کیف پول";
-    return invoice.product?.name ?? "—";
+    const name = invoice.product?.name ?? "—";
+    return stripSupplierNames(name);
   }
 
   async setUserInputData(

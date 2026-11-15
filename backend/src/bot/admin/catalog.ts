@@ -116,10 +116,14 @@ export function renderAdminProductCardText(
         : "🔀 فالبک تحویل دستی (تامین‌کننده OOS): *غیرفعال*"
       : null;
 
+  const supplierName = product.supplierProductMapping?.supplier?.name as string | undefined;
+  const supplierLine = supplierName ? `🏭 تامین‌کننده: *${supplierName}*` : null;
+
   return [
     "✏️ *ویرایش محصول*",
     "",
     `📦 محصول: *${product.name}*`,
+    ...(supplierLine ? [supplierLine] : []),
     subCatLine,
     priceLine,
     shopStatusLine,
@@ -821,7 +825,9 @@ export async function editProductConversation(
             isActive: true,
             forceManualFallback: true,
             subCategory: { select: { id: true, name: true } },
-            supplierProductMapping: { select: { id: true } },
+            supplierProductMapping: {
+              select: { id: true, supplier: { select: { name: true } } },
+            },
           },
         });
         return row ? toPlain(row) : null;

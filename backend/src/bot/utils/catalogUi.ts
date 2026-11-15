@@ -27,12 +27,10 @@ import { emojiForLabel } from "../keyboards/grid";
 import { hasAnyAdminAccess } from "../admin/rbac";
 import { resolveShopShowOutOfStock } from "./shopBrowse";
 import { formatToman } from "../../lib/money";
+import { stripSupplierNames } from "./customerSupplierText";
 
 export function sanitizeCustomerCatalogText(text: string): string {
-  return text
-    .replace(/canboso/gi, "اشتراکینو")
-    .replace(/کنبوسo/g, "اشتراکینو")
-    .replace(/کنبوسو/g, "اشتراکینو");
+  return stripSupplierNames(text);
 }
 
 export async function buildShopCategoryOutOfStockMap(

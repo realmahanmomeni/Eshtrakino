@@ -46,6 +46,16 @@ const envSchema = z.object({
     .default("tgb_c72724412e4364cf9e1934c1c4d5a53333b93dcf53b1d6c1"),
   CANBOSO_BASE_URL: z.string().optional().default("https://canboso.com"),
   CANBOSO_CATALOG_TTL_MS: z.coerce.number().int().positive().optional(),
+  /** Quantum Store API. Empty skips catalog sync; the Supplier row is still ensured. */
+  QUANTUMVAULT_API_KEY: z.string().optional().default(""),
+  QUANTUMVAULT_BASE_URL: z
+    .string()
+    .optional()
+    .default("https://www.quantumvault.me/api/v1"),
+  /** Catalog sync period. Clamped to at least 60s. Default in code is 12 minutes. */
+  QUANTUMVAULT_SYNC_INTERVAL_MS: z.coerce.number().int().positive().optional(),
+  /** Alert admins when Quantum wallet balance drops below this USD amount. */
+  QUANTUMVAULT_LOW_BALANCE_USD: z.coerce.number().nonnegative().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

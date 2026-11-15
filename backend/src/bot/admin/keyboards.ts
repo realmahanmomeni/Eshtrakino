@@ -586,10 +586,23 @@ function truncateLabel(name: string, max = 30): string {
   return name.length > max ? `${name.slice(0, max - 1)}…` : name;
 }
 
-function adminProductListLabel(name: string, isActive?: boolean, max = 25): string {
-  const base = truncateLabel(name, max);
+function adminSupplierBadge(product: {
+  supplierProductMapping?: { supplier?: { name?: string | null } | null } | null;
+}): string {
+  const name = product.supplierProductMapping?.supplier?.name?.trim();
+  return name ? ` · ${name}` : "";
+}
+
+function adminProductListLabel(
+  name: string,
+  isActive?: boolean,
+  max = 25,
+  supplierName?: string | null,
+): string {
+  const badge = supplierName?.trim() ? ` · ${supplierName.trim()}` : "";
+  const base = truncateLabel(name, Math.max(8, max - badge.length));
   const suffix = isActive === false ? " ⏸" : "";
-  return `🔹 ${base}${suffix}`;
+  return `🔹 ${base}${badge}${suffix}`;
 }
 
 export function convProductPickCategoryKeyboard(
@@ -607,7 +620,12 @@ export function convProductPickCategoryKeyboard(
 
 export function convProductPickCategoryContentsKeyboard(
   subCategories: Array<{ id: number; name: string; isActive?: boolean }>,
-  standaloneProducts: Array<{ id: number; name: string; isActive?: boolean }>,
+  standaloneProducts: Array<{
+    id: number;
+    name: string;
+    isActive?: boolean;
+    supplierProductMapping?: { supplier?: { name?: string | null } | null } | null;
+  }>,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (subCategories.length > 0) {
@@ -619,7 +637,7 @@ export function convProductPickCategoryContentsKeyboard(
   }
   if (standaloneProducts.length > 0) {
     const prodButtons = standaloneProducts.map((p) => ({
-      text: adminProductListLabel(p.name, p.isActive, 25),
+      text: adminProductListLabel(p.name, p.isActive, 25, p.supplierProductMapping?.supplier?.name),
       data: ConvCb.pickProd(p.id),
     }));
     appendTwoColumn(kb, prodButtons);
@@ -629,12 +647,17 @@ export function convProductPickCategoryContentsKeyboard(
 }
 
 export function convProductPickSubCategoryPlansKeyboard(
-  products: Array<{ id: number; name: string; isActive?: boolean }>,
+  products: Array<{
+    id: number;
+    name: string;
+    isActive?: boolean;
+    supplierProductMapping?: { supplier?: { name?: string | null } | null } | null;
+  }>,
   parentLabel?: string,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   const prodButtons = products.map((p) => ({
-    text: adminProductListLabel(p.name, p.isActive, 25),
+    text: adminProductListLabel(p.name, p.isActive, 25, p.supplierProductMapping?.supplier?.name),
     data: ConvCb.pickProd(p.id),
   }));
   appendTwoColumn(kb, prodButtons);
@@ -649,7 +672,12 @@ export const convProductPickKeyboard = convProductPickCategoryContentsKeyboard;
 export const ADMIN_PRODUCT_PICK_PAGE_SIZE = 8;
 
 export function adminProductPickKeyboard(
-  products: Array<Product & { category?: Category }>,
+  products: Array<
+    Product & {
+      category?: Category;
+      supplierProductMapping?: { supplier?: { name?: string | null } | null } | null;
+    }
+  >,
   mode: "price" | "delete" | "edit",
   page = 0,
 ): InlineKeyboard {
@@ -678,7 +706,8 @@ export function adminProductPickKeyboard(
             ? Callbacks.adminEditProduct(p.id)
             : Callbacks.adminDelProductAsk(p.id, safePage);
       const inactive = p.isActive === false ? " ⏸" : "";
-      const label = `🔹 ${name} · ${price}${inactive}`;
+      const supplier = adminSupplierBadge(p);
+      const label = `🔹 ${name}${supplier} · ${price}${inactive}`;
       return {
         text: label.length > 64 ? `${label.slice(0, 61)}…` : label,
         data,

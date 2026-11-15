@@ -1,6 +1,7 @@
 import { prisma } from "../../lib/prisma";
 import { SupplierAdapter, SupplierPurchaseUncertainError, SupplierPriceExceededError, SupplierProductNotFoundError } from "./SupplierAdapter";
 import { SupplierOrderStatus } from "@prisma/client";
+import { isQuantumSupplierName } from "./quantumvault/quantumCatalog";
 
 export class SupplierManager {
   private adapters = new Map<string, SupplierAdapter>();
@@ -24,7 +25,7 @@ export class SupplierManager {
     }
 
     if (/quantum|کوانتوم/i.test(norm)) {
-      const qv = this.adapters.get("QuantumVault");
+      const qv = this.adapters.get("Quantum") ?? this.adapters.get("QuantumVault");
       if (qv) return qv;
     }
 
@@ -56,6 +57,11 @@ export class SupplierManager {
 
     if (!mapping || !mapping.isAutoPurchase || !mapping.supplier.isActive) {
       return false; // No auto-purchase configured or supplier disabled
+    }
+
+    // Quantum purchase stays unused until the dedicated purchase phase.
+    if (isQuantumSupplierName(mapping.supplier.name)) {
+      return false;
     }
 
     const adapter = this.getAdapter(mapping.supplier.name);
@@ -166,6 +172,45 @@ export class SupplierManager {
         throw error;
       }
     }
+  }
+
+  /**
+   * Read-only recovery for an UNCERTAIN supplier order. Does not call POST /purchase.
+   */
+  async reconcileUncertain(supplierOrderId: number): Promise<boolean> {
+    const order = await prisma.supplierOrder.findUnique({
+      where: { id: supplierOrderId },
+      include: { supplier: true, apiKey: true },
+    });
+    if (!order || order.status !== SupplierOrderStatus.UNCERTAIN) return false;
+
+    const mapping = await prisma.supplierProductMapping.findFirst({
+      where: { supplierId: order.supplierId },
+    });
+    if (!mapping) return false;
+
+    const adapter = this.getAdapter(order.supplier.name);
+    if (!adapter.reconcile) return false;
+
+    const result = await adapter.reconcile(
+      SupplierManager.decryptKey(order.apiKey.encryptedKey),
+      mapping,
+      order.internalInvoiceId,
+    );
+    if (!result) return false;
+
+    await prisma.supplierOrder.update({
+      where: { id: order.id },
+      data: {
+        status: SupplierOrderStatus.SUCCESS,
+        supplierOrderId: result.supplierOrderId,
+        costAmount: result.costAmount,
+        deliveryPayload: result.deliveryPayload,
+        reconciled: true,
+        errorMessage: null,
+      },
+    });
+    return true;
   }
 
   /**

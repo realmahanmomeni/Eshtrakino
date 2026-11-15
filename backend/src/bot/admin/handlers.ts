@@ -1552,7 +1552,9 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       where: { id },
       include: {
         subCategory: true,
-        supplierProductMapping: { select: { id: true } },
+        supplierProductMapping: {
+          select: { id: true, supplier: { select: { name: true } } },
+        },
       },
     });
     if (!product) {
@@ -1615,7 +1617,9 @@ export function registerAdmin(bot: Bot<BotContext>): void {
         where: { id },
         include: {
           subCategory: true,
-          supplierProductMapping: { select: { id: true } },
+          supplierProductMapping: {
+          select: { id: true, supplier: { select: { name: true } } },
+        },
         },
       });
       if (!product) {
@@ -2371,7 +2375,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
       "",
       `❌ *Canboso:* ${result.message}`,
       "",
-      "کیف پول تامین‌کننده را بررسی کنید و مجدداً دکمه ارسال را بزنید، یا تحویل دستی را انتخاب کنید.",
+      "موجودی کیف پول Canboso را بررسی کنید. اگر کم است، ربات کانبوسو را شارژ کنید و دوباره ارسال را بزنید، یا تحویل دستی را انتخاب کنید.",
     ].join("\n");
 
     await safeEdit(ctx, failText, {
@@ -2496,6 +2500,7 @@ export function registerAdmin(bot: Bot<BotContext>): void {
     const orders = await prisma.supplierOrder.findMany({
       where: { status: { in: openStatuses } },
       include: {
+        supplier: { select: { name: true } },
         invoice: { include: { user: true, product: true } },
       },
       orderBy: { internalInvoiceId: "asc" },

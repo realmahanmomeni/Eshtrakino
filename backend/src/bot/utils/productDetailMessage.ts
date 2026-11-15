@@ -98,8 +98,9 @@ export function buildProductDetailPayload(input: {
   maxCaptionLen?: number;
 }): ProductDetailPayload {
   const safeDescription = sanitizeCustomerCatalogText(input.description);
+  const safeName = sanitizeCustomerCatalogText(input.product.name);
   const headerLines = [
-    `${emojiForLabel(input.product.name)} <b>${escapeHtml(input.product.name)}</b>`,
+    `${emojiForLabel(safeName)} <b>${escapeHtml(safeName)}</b>`,
     "",
     `💰 قیمت: <b>${escapeHtml(formatToman(input.effectivePrice))}</b>`,
     `⏱ زمان تحویل: <b>${escapeHtml(deliveryTypeLabel(input.product.deliveryType as DeliveryType))}</b>`,

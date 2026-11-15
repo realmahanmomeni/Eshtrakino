@@ -150,6 +150,18 @@ export const SHOP_TAXONOMY: CategoryTaxonomy[] = [
     ],
   },
   {
+    key: "ai_api",
+    name: "🔌 API هوش مصنوعی",
+    description: "کلید API مدل‌های هوش مصنوعی",
+    brands: [],
+  },
+  {
+    key: "social_otp",
+    name: "📱 شبکه‌های اجتماعی و شماره مجازی",
+    description: "شبکه‌های اجتماعی و شماره مجازی",
+    brands: [],
+  },
+  {
     key: "telegram_services",
     name: "🚀 خدمات تلگرام",
     description: "استارز و پریمیوم — تحویل توسط اشتراکینو",
