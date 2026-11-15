@@ -546,7 +546,7 @@ export class SupplierPendingImportService {
       where: {
         supplierId: mapping.supplierId,
         status: SupplierPendingImportStatus.PENDING,
-        remoteFolder: mapping.remoteFolder,
+        remoteFolder: { equals: mapping.remoteFolder, mode: "insensitive" },
       },
       orderBy: { id: "asc" },
     });
