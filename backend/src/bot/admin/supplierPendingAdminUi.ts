@@ -18,10 +18,20 @@ import { suggestPendingImportSubCategoryName } from "../../services/suppliers/pe
 export function pendingCategoryKeyboard(
   pendingId: number,
   categories: Array<{ id: number; name: string }>,
+  suggestedCategoryId?: number | null,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (const c of categories) {
-    const label = truncateInlineButtonLabel(`${emojiForLabel(c.name)} ${c.name}`);
+  if (suggestedCategoryId != null) {
+    kb.text("✨ استفاده از پیشنهاد پوشه", `adm:sup:pend:usesug:${pendingId}`).row();
+  }
+  const ordered = [...categories].sort((a, b) => {
+    if (a.id === suggestedCategoryId) return -1;
+    if (b.id === suggestedCategoryId) return 1;
+    return 0;
+  });
+  for (const c of ordered) {
+    const mark = c.id === suggestedCategoryId ? "✨ " : "";
+    const label = truncateInlineButtonLabel(`${mark}${emojiForLabel(c.name)} ${c.name}`);
     kb.text(label, `adm:sup:pend:cat:${pendingId}:${c.id}`).row();
   }
   kb.text("➕ دسته جدید", `adm:sup:pend:catadd:${pendingId}`).row();

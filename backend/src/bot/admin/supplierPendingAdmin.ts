@@ -27,6 +27,7 @@ import {
 } from "./supplierPendingAdminUi";
 import { registerPendingImportPlacementConversations } from "./pendingImportPlacementConversation";
 import { suggestPendingImportSubCategoryName } from "../../services/suppliers/pendingImportBrandName";
+import { findFolderSuggestion, listFolderBulkActions } from "../../services/suppliers/quantumvault/quantumCategorySuggest";
 import { registerSupplierNameSyncAdmin } from "./supplierNameSyncAdmin";
 import { Callbacks } from "../keyboards/callbacks";
 
@@ -79,11 +80,13 @@ async function presentPendingList(
     }),
     prisma.supplierPendingImport.findMany({
       where: { status },
+      include: { supplier: { select: { name: true } } },
       orderBy: { createdAt: "desc" },
       skip: page * PENDING_LIST_PAGE_SIZE,
       take: PENDING_LIST_PAGE_SIZE,
     }),
   ]);
+  const bulkActions = filter === "PENDING" ? await listFolderBulkActions() : [];
 
   const kb = new InlineKeyboard();
   kb
@@ -116,10 +119,19 @@ async function presentPendingList(
     return;
   }
 
+  for (const action of bulkActions.slice(0, 6)) {
+    const label = truncateInlineButtonLabel(
+      `✅ تایید همه «${action.remoteFolder}» (${action.pendingCount})`,
+      60,
+    );
+    kb.text(label, `adm:sup:pend:bulkask:${action.mappingId}`).row();
+  }
+
   for (const row of rows) {
     const icon = filter === "PENDING" ? "⏳" : "🚫";
+    const supplier = row.supplier?.name ? `${row.supplier.name} · ` : "";
     const label = truncateInlineButtonLabel(
-      `${icon} ${formatPendingDisplayName(row.displayName)}`,
+      `${icon} ${supplier}${formatPendingDisplayName(row.displayName)}`,
       60,
     );
     kb.text(label, `adm:sup:pend:v:${row.id}`).row();
@@ -365,20 +377,103 @@ export function registerSupplierPendingImportAdmin(bot: Bot<BotContext>): void {
     }
 
     const categories = await catalogService.listActiveCategories();
+    const suggestion = await findFolderSuggestion(row.supplierId, row.remoteFolder);
+    const suggestionLine = suggestion
+      ? `پیشنهاد پوشه «${suggestion.remoteFolder}»: <b>${suggestion.category.name}${
+          suggestion.subCategory ? ` › ${suggestion.subCategory.name}` : ""
+        }</b>`
+      : "دسته‌بندی فروشگاه را انتخاب کنید:";
     await safeEdit(
       ctx,
       [
         "📂 <b>انتخاب دسته‌بندی</b>",
         "",
         `محصول: <b>${formatPendingDisplayName(row.displayName).replace(/</g, "&lt;")}</b>`,
+        `تامین‌کننده: <b>${(await prisma.supplier.findUnique({ where: { id: row.supplierId }, select: { name: true } }))?.name ?? "—"}</b>`,
         "",
-        "دسته‌بندی فروشگاه را انتخاب کنید:",
+        suggestionLine,
       ].join("\n"),
       {
         parse_mode: "HTML",
-        reply_markup: pendingCategoryKeyboard(pendingId, categories),
+        reply_markup: pendingCategoryKeyboard(pendingId, categories, suggestion?.categoryId),
       },
     );
+  });
+
+  admin.callbackQuery(/^adm:sup:pend:usesug:(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const pendingId = Number(ctx.match![1]);
+    const row = await prisma.supplierPendingImport.findUnique({ where: { id: pendingId } });
+    if (!row || row.status !== SupplierPendingImportStatus.PENDING) {
+      await safeEdit(ctx, "⚠️ این درخواست قبلاً بررسی شده است.", adminSuppliersKeyboard());
+      return;
+    }
+    const suggestion = await findFolderSuggestion(row.supplierId, row.remoteFolder);
+    if (!suggestion) {
+      await safeEdit(ctx, "⚠️ پیشنهادی برای این پوشه ثبت نشده است.", adminSuppliersKeyboard());
+      return;
+    }
+    if (suggestion.subCategoryId == null) {
+      const subs = await catalogService.listSubCategoriesByCategory(suggestion.categoryId, true);
+      if (subs.length > 0) {
+        await presentSubCategoryPicker(ctx, pendingId, suggestion.categoryId);
+        return;
+      }
+    }
+    const draft = await supplierPendingImportService.savePlacementDraft(
+      pendingId,
+      suggestion.categoryId,
+      suggestion.subCategoryId,
+    );
+    if (!draft.ok) {
+      await ctx.answerCallbackQuery({ text: draft.message, show_alert: true });
+      return;
+    }
+    await presentPlacementConfirm(ctx, pendingId);
+  });
+
+  admin.callbackQuery(/^adm:sup:pend:bulkask:(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    await ctx.answerCallbackQuery();
+    const mappingId = Number(ctx.match![1]);
+    const actions = await listFolderBulkActions();
+    const action = actions.find((item) => item.mappingId === mappingId);
+    if (!action) {
+      await safeEdit(ctx, "⚠️ پوشه‌ای برای تایید گروهی پیدا نشد.", adminSuppliersKeyboard());
+      return;
+    }
+    const place = action.subCategoryName
+      ? `${action.categoryName} › ${action.subCategoryName}`
+      : action.categoryName;
+    const kb = new InlineKeyboard()
+      .text("✅ تایید همه", `adm:sup:pend:bulkok:${mappingId}`)
+      .row()
+      .text("🔙 بازگشت", "adm:sup:pend:list:PENDING:0");
+    await safeEdit(
+      ctx,
+      [
+        "✅ <b>تایید گروهی محصولات Quantum</b>",
+        "",
+        `پوشه: <b>${action.remoteFolder}</b>`,
+        `تعداد: <b>${action.pendingCount}</b>`,
+        `مقصد: <b>${place}</b>`,
+        "",
+        "همه موارد در انتظار این پوشه به فروشگاه اضافه شوند؟",
+      ].join("\n"),
+      { parse_mode: "HTML", reply_markup: kb },
+    );
+  });
+
+  admin.callbackQuery(/^adm:sup:pend:bulkok:(\d+)$/, async (ctx) => {
+    if (!(await guardCatalogAdmin(ctx))) return;
+    const mappingId = Number(ctx.match![1]);
+    const result = await supplierPendingImportService.approvePendingFolder(
+      mappingId,
+      BigInt(ctx.from!.id),
+    );
+    await ctx.answerCallbackQuery({ text: result.message, show_alert: true });
+    await presentPendingList(ctx, "PENDING", 0);
   });
 
   admin.callbackQuery(/^adm:sup:pend:cat:(\d+):(\d+)$/, async (ctx) => {

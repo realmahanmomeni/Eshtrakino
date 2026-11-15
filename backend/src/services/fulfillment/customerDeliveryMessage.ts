@@ -1,5 +1,6 @@
 import type { Api } from "grammy";
 import { escapeHtml } from "../../lib/htmlEscape";
+import { stripSupplierNames } from "../../bot/utils/customerSupplierText";
 import { assertCustomerDeliveryMessageSafe } from "./canbosoDeliveryFormat";
 
 export type CustomerDeliveryMessageParams = {
@@ -14,7 +15,7 @@ export function formatCustomerDeliveryMessage(params: CustomerDeliveryMessagePar
   const lines: string[] = [
     "🎉 <b>سفارش شما با موفقیت آماده و تحویل داده شد!</b>",
     "━━━━━━━━━━━━━━━━━━",
-    `🛍 <b>محصول:</b> ${escapeHtml(params.productName)}`,
+    `🛍 <b>محصول:</b> ${escapeHtml(stripSupplierNames(params.productName))}`,
     `🧾 <b>شماره سفارش:</b> <code>#${params.invoiceId}</code>`,
   ];
 

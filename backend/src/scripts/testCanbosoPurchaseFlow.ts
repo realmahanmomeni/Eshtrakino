@@ -164,6 +164,7 @@ function syntheticMappingFromCatalog(
     supplierId,
     supplierProductKey,
     supplierVariantKey,
+    supplierOfferGroup: null,
     maxPriceLimit: null,
     isAutoPurchase: true,
     createdAt: new Date(0),

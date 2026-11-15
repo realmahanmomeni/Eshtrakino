@@ -1,481 +1,379 @@
+import { env } from "../../../config/env";
+import type { SupplierProductMapping } from "@prisma/client";
 import {
   SupplierAdapter,
-  SupplierProduct,
-  ValidationResult,
-  PurchaseResult,
   SupplierAuthenticationError,
   SupplierInsufficientBalanceError,
+  SupplierInvalidResponseError,
+  SupplierNetworkError,
   SupplierOutOfStockError,
   SupplierProductNotFoundError,
-  SupplierRateLimitError,
-  SupplierNetworkError,
-  SupplierInvalidResponseError,
   SupplierPurchaseUncertainError,
-  SupplierUnknownError
+  SupplierUnknownError,
+  type PurchaseResult,
+  type SupplierProduct,
+  type SupplierPurchaseContext,
+  type ValidationResult,
 } from "../SupplierAdapter";
-import { SupplierProductMapping } from "@prisma/client";
+import { parseUsdAmount } from "./quantumMoney";
+import { expandQuantumCatalog, QUANTUM_SUPPLIER_NAME } from "./quantumCatalog";
+import { quantumStockCountForAdmin } from "./quantumStock";
+import {
+  quantumVaultHttp,
+  throwForQuantumStatus,
+  type QuantumHttpResult,
+  type QuantumVaultHttpClient,
+} from "./quantumVaultHttp";
 
+/**
+ * Quantum Store API adapter.
+ *
+ * Purchase is implemented so a later dispatch PR can call it, but nothing in
+ * this PR calls purchase(). POST /purchase is never retried: a timeout, a
+ * dropped connection, or a body we cannot parse leaves the charge uncertain.
+ */
 export class QuantumVaultAdapter implements SupplierAdapter {
-  readonly name = "QuantumVault";
-  private readonly baseUrl = "https://www.quantumvault.me/api/v1";
+  readonly name = QUANTUM_SUPPLIER_NAME;
 
-  private async fetchApi(endpoint: string, apiKey: string, options: RequestInit = {}): Promise<Response> {
-    const headers = new Headers(options.headers || {});
-    headers.set("X-API-Key", apiKey);
-    headers.set("Content-Type", "application/json");
+  constructor(private readonly http: QuantumVaultHttpClient = quantumVaultHttp) {}
 
-    try {
-      const response = await fetch(`${this.baseUrl}${endpoint}`, {
-        ...options,
-        headers,
-      });
-
-      // Handle common supplier HTTP errors here
-      if (response.status === 401 || response.status === 403) {
-        throw new SupplierAuthenticationError("Invalid or revoked API key.");
-      }
-      if (response.status === 429) {
-        const reset = response.headers.get("X-RateLimit-Reset");
-        const remaining = response.headers.get("X-RateLimit-Remaining");
-        throw new SupplierRateLimitError(`Rate limit exceeded. Remaining: ${remaining}, Reset: ${reset}`);
-      }
-      if (response.status >= 500) {
-        throw new SupplierNetworkError(`QuantumVault Server Error: ${response.status}`);
-      }
-
-      return response;
-    } catch (error: any) {
-      if (error instanceof SupplierAuthenticationError ||
-          error instanceof SupplierRateLimitError ||
-          error instanceof SupplierNetworkError) {
-        throw error; // Re-throw already mapped errors
-      }
-
-      if (error.name === "AbortError") {
-        // If this is a POST /purchase, we should NOT catch it here as a simple network error
-        // The caller (purchase method) provides AbortSignal and must handle it to throw UncertainError
-        throw error;
-      }
-
-      throw new SupplierNetworkError(`Network/Transport error: ${error.message}`);
+  resolveApiKey(apiKey?: string): string {
+    const key = (apiKey ?? env.QUANTUMVAULT_API_KEY ?? "").trim();
+    if (!key) {
+      throw new SupplierAuthenticationError("QUANTUMVAULT_API_KEY is not configured.");
     }
+    return key;
   }
 
   async validateKey(apiKey: string): Promise<ValidationResult> {
     try {
-      const response = await this.fetchApi("/balance", apiKey);
-      if (!response.ok) {
-        return { isValid: false, errorMessage: `HTTP ${response.status}` };
+      const result = await this.http.request("/balance", apiKey, { retry: true });
+      if (!result.ok) {
+        return { isValid: false, errorMessage: result.message };
       }
-      const data: any = await response.json();
-      const balance = typeof data.balance === 'number' ? data.balance : undefined;
-      const credit = typeof data.credit === 'number' ? data.credit : undefined;
+      const record = asRecord(result.body);
+      const balance = parseUsdAmount(record?.balance) ?? undefined;
+      const credit = parseUsdAmount(record?.credit) ?? undefined;
       return { isValid: true, balance, credit };
-    } catch (error: any) {
-      return { isValid: false, errorMessage: error.message };
+    } catch (error) {
+      return {
+        isValid: false,
+        errorMessage: error instanceof Error ? error.message : "Quantum key check failed.",
+      };
     }
   }
 
   async listProducts(apiKey: string): Promise<SupplierProduct[]> {
-    const response = await this.fetchApi("/products", apiKey);
-    if (!response.ok) {
-      throw new SupplierInvalidResponseError(`Failed to list products: HTTP ${response.status}`);
+    const result = await this.http.request("/products", apiKey, { retry: true });
+    if (!result.ok) {
+      throwForQuantumStatus(result);
+      throw new SupplierInvalidResponseError(
+        `Failed to list Quantum products: ${result.message}`,
+      );
     }
-    const data: any = await response.json();
-    const products = data.products;
-    if (!Array.isArray(products)) {
-      throw new SupplierInvalidResponseError("Expected products array in response.");
-    }
-
-    return products.map((p: any) => ({
-      productKey: p.productKey || p.id,
-      name: p.name || "Unknown Product",
-      deliveryFields: p.deliverFields || [],
-      variants: Array.isArray(p.variants) ? p.variants.map((v: any) => ({
-        variantKey: v.variantKey || v.key || v.id,
-        name: v.name || "Default",
-        price: v.price || 0,
-        stock: v.stock,
-      })) : [],
-    }));
+    return expandQuantumCatalog(result.body).reduce<SupplierProduct[]>((products, unit) => {
+      let product = products.find((row) => row.productKey === unit.productKey);
+      if (!product) {
+        product = {
+          productKey: unit.productKey,
+          name: unit.variantKey ? unit.name.split(" — ")[0] || unit.name : unit.name,
+          deliveryFields: unit.deliverFieldNames,
+          variants: [],
+        };
+        products.push(product);
+      }
+      if (unit.variantKey) {
+        product.variants.push({
+          variantKey: unit.variantKey,
+          name: unit.variantName || unit.variantKey,
+          price: unit.priceUsd ?? 0,
+          stock: quantumStockCountForAdmin(unit.stockState) ?? undefined,
+        });
+      }
+      return products;
+    }, []);
   }
 
   async getProductDetails(apiKey: string, productKey: string): Promise<SupplierProduct | null> {
-    const response = await this.fetchApi(`/products/${productKey}`, apiKey);
-    if (response.status === 404) {
-      return null;
+    const result = await this.http.request(
+      `/products/${encodeURIComponent(productKey)}`,
+      apiKey,
+      { retry: true },
+    );
+    if (result.status === 404) return null;
+    if (!result.ok) {
+      throwForQuantumStatus(result);
+      throw new SupplierInvalidResponseError(
+        `Failed to read Quantum product: ${result.message}`,
+      );
     }
-    if (!response.ok) {
-      throw new SupplierInvalidResponseError(`Failed to get product details: HTTP ${response.status}`);
-    }
-    const responseData: any = await response.json();
-    const data = responseData.product;
-    if (!data) {
-      throw new SupplierInvalidResponseError("Expected product object in response.");
-    }
-
+    const wrapped = asRecord(result.body);
+    const product = wrapped?.product ?? result.body;
+    const units = expandQuantumCatalog({ products: [product] });
+    const first = units[0];
+    if (!first) return null;
     return {
-      productKey: data.productKey || data.id,
-      name: data.name || "Unknown Product",
-      deliveryFields: data.deliverFields || [],
-      variants: Array.isArray(data.variants) ? data.variants.map((v: any) => ({
-        variantKey: v.variantKey || v.key || v.id,
-        name: v.name || "Default",
-        price: v.price || 0,
-        stock: v.stock,
-      })) : [],
+      productKey: first.productKey,
+      name: first.name,
+      deliveryFields: first.deliverFieldNames,
+      variants: units
+        .filter((unit) => unit.variantKey)
+        .map((unit) => ({
+          variantKey: unit.variantKey!,
+          name: unit.variantName || unit.name,
+          price: unit.priceUsd ?? 0,
+          stock: quantumStockCountForAdmin(unit.stockState) ?? undefined,
+        })),
     };
   }
 
   async purchase(
     apiKey: string,
     mapping: SupplierProductMapping,
-    expectedPrice?: number,
-    _context?: import("../SupplierAdapter").SupplierPurchaseContext,
+    _expectedPrice?: number,
+    context?: SupplierPurchaseContext,
   ): Promise<PurchaseResult> {
-    const signal = AbortSignal.timeout(15000); // 15s timeout for purchase
+    const payload: Record<string, unknown> = {
+      productKey: mapping.supplierProductKey,
+      quantity: 1,
+    };
+    if (mapping.supplierVariantKey) payload.variantKey = mapping.supplierVariantKey;
 
-    let response: Response;
+    const headers: Record<string, string> = {};
+    if (context?.internalInvoiceId != null) {
+      const idempotencyKey = quantumIdempotencyKey(context.internalInvoiceId);
+      headers["Idempotency-Key"] = idempotencyKey;
+      payload.clientOrderId = idempotencyKey;
+    }
+
+    let result: QuantumHttpResult;
     try {
-      const payload: any = {
-        productKey: mapping.supplierProductKey,
-        quantity: 1, // Eshtrakino currently assumes qty 1 for digital products per invoice
-      };
-      if (mapping.supplierVariantKey) {
-        payload.variantKey = mapping.supplierVariantKey;
-      }
-
-      response = await this.fetchApi("/purchase", apiKey, {
+      result = await this.http.request("/purchase", apiKey, {
         method: "POST",
-        body: JSON.stringify(payload),
-        signal,
+        body: payload,
+        headers,
+        timeoutMs: 15_000,
+        retry: false,
       });
-    } catch (error: any) {
-      if (error.name === "AbortError" || error instanceof SupplierNetworkError) {
-        // We LOST connection or TIMED OUT during a POST request.
-        // We do NOT know if QuantumVault received the request and processed the purchase.
-        // MUST throw UncertainError to enter reconciliation.
+    } catch (error) {
+      if (error instanceof SupplierInvalidResponseError) throw error;
+      if (error instanceof SupplierNetworkError || isAbort(error)) {
         throw new SupplierPurchaseUncertainError(
-          `Connection lost or timed out during POST /purchase. Order state is uncertain. Original error: ${error.message}`
+          "Quantum POST /purchase timed out or the connection dropped. It was not retried.",
         );
       }
       throw error;
     }
 
-    // Process HTTP errors from the purchase endpoint
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errorData: any = {};
-      try { errorData = JSON.parse(errorText); } catch (e) {}
-
-      // 409 = Out of stock (documented QuantumVault status code)
-      if (response.status === 409) {
-        throw new SupplierOutOfStockError(errorData.message || "Product is out of stock.");
-      }
-      if (response.status === 400 && (errorText.toLowerCase().includes("stock") || errorData.code === "OUT_OF_STOCK")) {
-        throw new SupplierOutOfStockError(errorData.message || "Product is out of stock.");
-      }
-      if (response.status === 400 && errorText.toLowerCase().includes("balance")) {
-        throw new SupplierInsufficientBalanceError(errorData.message || "Insufficient wallet balance.");
-      }
-      if (response.status === 404) {
-        throw new SupplierProductNotFoundError(errorData.message || "Product or variant not found.");
-      }
-
-      // Other 4xx or 5xx not caught by fetchApi
-      throw new SupplierUnknownError(`Purchase failed with HTTP ${response.status}: ${errorText.slice(0, 200)}`);
+    if (!result.ok) {
+      throw mapPurchaseHttpError(result);
     }
 
-    // -----------------------------------------------------------------------
-    // SUCCESS RESPONSE PARSING
-    //
-    // Actual POST /purchase schema (verified vs. live QuantumVault API docs, 2026-09-23):
-    //
-    //   {
-    //     "success": true,
-    //     "order": {
-    //       "requested": 1,
-    //       "fulfilled": 1,
-    //       "unitPrice": 0.25,
-    //       "totalCharged": 0.25,
-    //       "currency": "USD",
-    //       "items": [
-    //         {
-    //           "orderId":    "QV-8F3A21C9",
-    //           "purchaseId": "665f1c2e8a3b4d5e6f7a8b9c",
-    //           "product":    "Outlook Mail",
-    //           "productKey": "outlook_mail",
-    //           "variantKey": null,
-    //           "price":      0.25,
-    //           "currency":   "USD",
-    //           "deliveredAt":"2026-07-15T09:24:11.482Z",
-    //           "fields":     [ { "name": "email", "label": "Email", "value": "..." } ],
-    //           "data":       { "email": "..." }
-    //         }
-    //       ]
-    //     }
-    //   }
-    //
-    // ROOT CAUSE OF INVOICE #8 BUG:
-    //   The old parser read `data.order.orderId` which is ALWAYS undefined.
-    //   The correct location is `data.order.items[0].orderId`.
-    // -----------------------------------------------------------------------
-
-    let data: any;
+    let data: unknown;
     try {
-      data = await response.json();
-    } catch (e) {
-      throw new SupplierInvalidResponseError(
-        "QuantumVault purchase response is not valid JSON."
+      data = result.body;
+      if (typeof data === "string") data = JSON.parse(data) as unknown;
+    } catch {
+      throw new SupplierPurchaseUncertainError(
+        "Quantum purchase response could not be parsed. It was not retried.",
       );
     }
 
-    if (!data || typeof data !== "object") {
-      throw new SupplierInvalidResponseError(
-        "QuantumVault purchase response is empty or not an object."
-      );
-    }
-
-    // Business-level success check — HTTP 200 does not guarantee a completed purchase
-    if (data.success === false) {
-      const msg = (data.message || data.error || "Supplier reported business-level failure.") as string;
-      throw new SupplierUnknownError(`QuantumVault purchase rejected (success=false): ${msg}`);
-    }
-
-    const order = data.order;
-    if (!order || typeof order !== "object") {
-      throw new SupplierInvalidResponseError(
-        `QuantumVault purchase response missing 'order' object. ` +
-        `Top-level keys: [${Object.keys(data).join(", ")}]`
-      );
-    }
-
-    const items: any[] = order.items;
-    if (!Array.isArray(items) || items.length === 0) {
-      throw new SupplierInvalidResponseError(
-        `QuantumVault purchase response 'order.items' is missing or empty. ` +
-        `order keys: [${Object.keys(order).join(", ")}]`
-      );
-    }
-
-    // We purchase qty=1, so items[0] is our single delivered unit.
-    const item = items[0]!;
-
-    // orderId is the per-unit supplier reference — critical for recovery via GET /orders/:orderId
-    const rawOrderId = item.orderId;
-    if (rawOrderId === undefined || rawOrderId === null || rawOrderId === "") {
-      throw new SupplierInvalidResponseError(
-        `QuantumVault purchase response item missing 'orderId'. ` +
-        `item keys: [${Object.keys(item).join(", ")}]`
-      );
-    }
-    const supplierOrderId = String(rawOrderId);
-
-    // Post-purchase price check — can't undo, but alert for admin review
-    const totalCharged = Number(order.totalCharged) || 0;
-    if (mapping.maxPriceLimit && totalCharged > Number(mapping.maxPriceLimit)) {
-      console.error(
-        `[QuantumVault] PRICE ALERT: productKey=${mapping.supplierProductKey} ` +
-        `charged=${totalCharged} exceeds maxPriceLimit=${mapping.maxPriceLimit} orderId=${supplierOrderId}`
-      );
-    }
-
-    // Partial delivery warning (order.fulfilled < order.requested)
-    const fulfilled = Number(order.fulfilled) || 0;
-    const requested = Number(order.requested) || 1;
-    if (fulfilled > 0 && fulfilled < requested) {
-      console.warn(
-        `[QuantumVault] Partial delivery: productKey=${mapping.supplierProductKey} ` +
-        `requested=${requested} fulfilled=${fulfilled} orderId=${supplierOrderId}`
-      );
-    }
-
-    const deliveryPayload = extractDeliveryPayload(item);
-
-    console.log(
-      `[QuantumVault] Purchase OK: productKey=${mapping.supplierProductKey} ` +
-      `orderId=${supplierOrderId} totalCharged=${totalCharged} ` +
-      `fieldsCount=${Array.isArray(item.fields) ? item.fields.length : 0}`
-    );
-
-    return {
-      supplierOrderId,
-      costAmount: totalCharged,
-      deliveryPayload,
-    };
+    return parsePurchaseBody(data, mapping.supplierProductKey);
   }
 
+  /**
+   * Read-only recovery after a timed-out purchase. Never calls POST /purchase.
+   * Returns null when the match is missing or ambiguous.
+   */
   async reconcile(
     apiKey: string,
     mapping: SupplierProductMapping,
-    internalInvoiceId: number
+    internalInvoiceId: number,
   ): Promise<PurchaseResult | null> {
-    // Recovery path for PURCHASE_UNCERTAIN state (timeout/network drop during POST).
-    //
-    // QuantumVault API docs state:
-    //   "A timeout does not mean the purchase failed — it may have succeeded.
-    //    Call GET /orders to find the order, then GET /orders/:orderId to fetch
-    //    the delivered fields you already paid for."
-    //
-    // Strategy:
-    //   1. GET /orders to list recent orders.
-    //   2. Filter by productKey + variantKey within a 5-minute lookback window.
-    //   3. Exactly ONE match  → GET /orders/:orderId → return PurchaseResult.
-    //   4. Zero or ambiguous  → return null (manual admin review required).
-    //
-    // We return null (not throw) on any intermediate error so the caller preserves
-    // UNCERTAIN status rather than incorrectly marking the order FAILED.
-
-    const RECONCILE_LOOKBACK_MS = 5 * 60 * 1000; // 5 minutes
-
+    const lookbackMs = 5 * 60 * 1000;
     console.log(
-      `[QuantumVault] Reconciling uncertain purchase: internalInvoiceId=${internalInvoiceId} ` +
-      `productKey=${mapping.supplierProductKey}`
+      `[Quantum] Reconciling uncertain purchase: internalInvoiceId=${internalInvoiceId} productKey=${mapping.supplierProductKey}`,
     );
 
-    let ordersResponse: Response;
+    let orders: QuantumHttpResult;
     try {
-      ordersResponse = await this.fetchApi("/orders", apiKey);
-    } catch (error: any) {
-      console.error(`[QuantumVault] reconcile: GET /orders failed: ${error.message}`);
+      orders = await this.http.request("/orders?limit=100", apiKey, { retry: true });
+    } catch (error) {
+      console.error(
+        `[Quantum] reconcile: GET /orders failed: ${error instanceof Error ? error.message : "error"}`,
+      );
       return null;
     }
+    if (!orders.ok) return null;
 
-    if (!ordersResponse.ok) {
-      console.error(`[QuantumVault] reconcile: GET /orders returned HTTP ${ordersResponse.status}`);
-      return null;
-    }
-
-    let ordersData: any;
-    try {
-      ordersData = await ordersResponse.json();
-    } catch (e) {
-      console.error("[QuantumVault] reconcile: GET /orders returned non-JSON body");
-      return null;
-    }
-
-    const orderList: any[] = Array.isArray(ordersData?.orders) ? ordersData.orders : [];
-    if (orderList.length === 0) {
-      console.log("[QuantumVault] reconcile: GET /orders returned empty list — cannot auto-reconcile.");
-      return null;
-    }
-
-    const now = Date.now();
-    const cutoff = now - RECONCILE_LOOKBACK_MS;
-
-    const candidates = orderList.filter((o: any) => {
-      if (o.productKey !== mapping.supplierProductKey) return false;
-      if (mapping.supplierVariantKey && o.variantKey !== mapping.supplierVariantKey) return false;
-      const dateMs = o.date ? new Date(o.date).getTime() : NaN;
-      // Exclude orders clearly outside the lookback window; include if date is absent/unparseable
-      if (!isNaN(dateMs) && dateMs < cutoff) return false;
+    const list = asRecord(orders.body);
+    const orderList = Array.isArray(list?.orders) ? list.orders : [];
+    const cutoff = Date.now() - lookbackMs;
+    const candidates = orderList.filter((entry) => {
+      const order = asRecord(entry);
+      if (!order || order.productKey !== mapping.supplierProductKey) return false;
+      if (mapping.supplierVariantKey && order.variantKey !== mapping.supplierVariantKey) return false;
+      const dateMs = typeof order.date === "string" ? new Date(order.date).getTime() : NaN;
+      if (!Number.isNaN(dateMs) && dateMs < cutoff) return false;
       return true;
     });
 
-    if (candidates.length === 0) {
-      console.log(
-        `[QuantumVault] reconcile: no matching recent orders for productKey=${mapping.supplierProductKey}. ` +
-        `Manual admin review required.`
-      );
-      return null;
-    }
+    if (candidates.length !== 1) return null;
+    const candidate = asRecord(candidates[0]);
+    const candidateOrderId = candidate?.orderId;
+    if (candidateOrderId == null || candidateOrderId === "") return null;
 
-    if (candidates.length > 1) {
-      // Ambiguous — cannot safely determine which order belongs to this invoice
-      console.warn(
-        `[QuantumVault] reconcile: ${candidates.length} candidate orders found for ` +
-        `productKey=${mapping.supplierProductKey} — ambiguous, manual admin review required.`
-      );
-      return null;
-    }
-
-    // Exactly one match — fetch its full delivery details
-    const candidate = candidates[0]!;
-    const candidateOrderId = String(candidate.orderId);
-
-    console.log(
-      `[QuantumVault] reconcile: fetching delivery for orderId=${candidateOrderId} ` +
-      `(internalInvoiceId=${internalInvoiceId})`
-    );
-
-    let detailResponse: Response;
+    let detail: QuantumHttpResult;
     try {
-      detailResponse = await this.fetchApi(`/orders/${encodeURIComponent(candidateOrderId)}`, apiKey);
-    } catch (error: any) {
-      console.error(`[QuantumVault] reconcile: GET /orders/${candidateOrderId} failed: ${error.message}`);
-      return null;
-    }
-
-    if (!detailResponse.ok) {
-      console.error(
-        `[QuantumVault] reconcile: GET /orders/${candidateOrderId} returned HTTP ${detailResponse.status}`
+      detail = await this.http.request(
+        `/orders/${encodeURIComponent(String(candidateOrderId))}`,
+        apiKey,
+        { retry: true },
       );
+    } catch {
       return null;
     }
-
-    let detailData: any;
-    try {
-      detailData = await detailResponse.json();
-    } catch (e) {
-      console.error(`[QuantumVault] reconcile: GET /orders/${candidateOrderId} returned non-JSON body`);
-      return null;
-    }
-
-    // GET /orders/:orderId → { order: { orderId, purchaseId, fields, data, price, ... } }
-    const detailOrder = detailData?.order;
-    if (!detailOrder || typeof detailOrder !== "object") {
-      console.error(
-        `[QuantumVault] reconcile: GET /orders/${candidateOrderId} response missing 'order' object.`
-      );
-      return null;
-    }
-
-    const resolvedOrderId = String(detailOrder.orderId || candidateOrderId);
-    const deliveryPayload = extractDeliveryPayload(detailOrder);
-    const costAmount = Number(detailOrder.price) || Number(candidate.price) || 0;
-
-    console.log(
-      `[QuantumVault] reconcile: success — resolved orderId=${resolvedOrderId} for ` +
-      `internalInvoiceId=${internalInvoiceId}`
-    );
+    if (!detail.ok) return null;
+    const detailOrder = asRecord(asRecord(detail.body)?.order);
+    if (!detailOrder) return null;
 
     return {
-      supplierOrderId: resolvedOrderId,
-      costAmount,
-      deliveryPayload,
+      supplierOrderId: String(detailOrder.orderId || candidateOrderId),
+      costAmount: parseUsdAmount(detailOrder.price) ?? parseUsdAmount(candidate?.price) ?? 0,
+      deliveryPayload: JSON.stringify({
+        fields: Array.isArray(detailOrder.fields) ? detailOrder.fields : [],
+        purchaseId: detailOrder.purchaseId ?? null,
+        ...(detailOrder.data && typeof detailOrder.data === "object" ? { data: detailOrder.data } : {}),
+      }),
     };
   }
 }
 
-/**
- * Extracts a JSON delivery payload from a QuantumVault delivered item object.
- *
- * Works for:
- *   - Items inside POST /purchase response   (order.items[])
- *   - Single-order from GET /orders/:orderId (the 'order' object itself)
- *
- * Schema of the delivered item:
- *   fields:     [{ name, label, value }]  — delivery details in display order
- *   data:       { fieldName: value }       — same values, keyed by field name
- *   purchaseId: string                     — internal purchase reference
- *
- * We store fields[] as the canonical payload (preserves labels/order for display).
- * purchaseId is included for potential re-delivery or audit.
- */
-function extractDeliveryPayload(item: any): string {
-  if (!item || typeof item !== "object") {
-    return JSON.stringify({});
-  }
-
-  const fields = Array.isArray(item.fields) ? item.fields : [];
-  const purchaseId: string | null = item.purchaseId ?? null;
-
-  return JSON.stringify({
-    fields,
-    purchaseId,
-    ...(item.data && typeof item.data === "object" ? { data: item.data } : {}),
-  });
+export function quantumIdempotencyKey(invoiceId: number): string {
+  const key = `esh-inv-${invoiceId}`;
+  return key.length >= 8 ? key : key.padEnd(8, "0");
 }
 
-// Register adapter to the singleton manager (done in the central index/bootstrap)
-// supplierManager.registerAdapter(new QuantumVaultAdapter());
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
+function mapPurchaseHttpError(result: QuantumHttpResult): Error {
+  const message = result.message || `HTTP ${result.status}`;
+  const code =
+    result.body && typeof result.body === "object"
+      ? String((result.body as { code?: unknown }).code ?? "")
+      : "";
+
+  if (result.status === 401 || result.status === 403) {
+    throwForQuantumStatus(result);
+  }
+  if (result.status === 409 && code === "IDEMPOTENCY_INTERRUPTED") {
+    return new SupplierPurchaseUncertainError(
+      "Quantum idempotency was interrupted. Check orders before buying again.",
+    );
+  }
+  if (result.status === 409 && /still (being )?processed|still running/i.test(message)) {
+    return new SupplierPurchaseUncertainError(message);
+  }
+  if (result.status === 409) {
+    return new SupplierOutOfStockError(message);
+  }
+  if (result.status === 400 && /balance/i.test(message)) {
+    return new SupplierInsufficientBalanceError(message);
+  }
+  if (result.status === 400 && /stock/i.test(message)) {
+    return new SupplierOutOfStockError(message);
+  }
+  if (result.status === 404 || /not available via the api/i.test(message)) {
+    return new SupplierProductNotFoundError(message);
+  }
+  if (result.status === 503) {
+    return new SupplierUnknownError(
+      `Quantum verification failed temporarily; nothing was charged. ${message}`,
+    );
+  }
+  return new SupplierUnknownError(`Quantum purchase failed (${result.status}): ${message}`);
+}
+
+function parsePurchaseBody(data: unknown, productKey: string): PurchaseResult {
+  const root = asRecord(data);
+  if (!root) {
+    throw new SupplierInvalidResponseError("Quantum purchase response is empty.");
+  }
+  if (root.success === false) {
+    const message = typeof root.message === "string" ? root.message : "purchase rejected";
+    throw new SupplierUnknownError(`Quantum purchase rejected (success=false): ${message}`);
+  }
+
+  const order = asRecord(root.order);
+  if (!order) {
+    throw new SupplierInvalidResponseError("Quantum purchase response is missing order.");
+  }
+
+  const items = Array.isArray(order.items) ? order.items : [];
+  const processing = Array.isArray(order.processing) ? order.processing : [];
+  const totalCharged = parseUsdAmount(order.totalCharged) ?? 0;
+
+  if (items.length === 0 && processing.length > 0) {
+    const first = asRecord(processing[0]);
+    const orderId = first?.orderId;
+    if (typeof orderId !== "string" || !orderId) {
+      throw new SupplierInvalidResponseError("Quantum processing order is missing orderId.");
+    }
+    console.log(
+      `[Quantum] Purchase processing: productKey=${productKey} orderId=${orderId} totalCharged=${totalCharged}`,
+    );
+    return {
+      supplierOrderId: orderId,
+      costAmount: totalCharged,
+      deliveryPayload: JSON.stringify({ status: "processing", processing }),
+      isProcessing: true,
+      status: "processing",
+    };
+  }
+
+  const item = asRecord(items[0]);
+  if (!item) {
+    throw new SupplierInvalidResponseError(
+      "Quantum purchase response 'order.items' is missing or empty.",
+    );
+  }
+
+  const fulfilled = Number(order.fulfilled);
+  const requested = Number(order.requested);
+  if (Number.isFinite(fulfilled) && Number.isFinite(requested) && fulfilled > 0 && fulfilled < requested) {
+    console.warn(
+      `[Quantum] Partial delivery: productKey=${productKey} requested=${requested} fulfilled=${fulfilled}`,
+    );
+  }
+  const rawOrderId = item.orderId;
+  if (rawOrderId == null || rawOrderId === "") {
+    throw new SupplierInvalidResponseError("Quantum purchase item is missing orderId.");
+  }
+
+  const fieldCount = Array.isArray(item.fields) ? item.fields.length : 0;
+  console.log(
+    `[Quantum] Purchase OK: productKey=${productKey} orderId=${String(rawOrderId)} totalCharged=${totalCharged} fieldsCount=${fieldCount}`,
+  );
+
+  return {
+    supplierOrderId: String(rawOrderId),
+    costAmount: totalCharged || parseUsdAmount(item.price) || 0,
+    deliveryPayload: JSON.stringify({
+      fields: Array.isArray(item.fields) ? item.fields : [],
+      purchaseId: item.purchaseId ?? null,
+      ...(item.data && typeof item.data === "object" ? { data: item.data } : {}),
+    }),
+    status: typeof order.status === "string" ? order.status : "completed",
+  };
+}
+
+export const quantumVaultAdapter = new QuantumVaultAdapter();

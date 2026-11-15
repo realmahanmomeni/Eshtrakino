@@ -26,6 +26,7 @@ import { groupLogger } from "../../services/logger/GroupLogger";
 import { verifyBeforeCheckout } from "../../services/catalog/prePaymentGuardService";
 import { Callbacks } from "../keyboards/callbacks";
 import { priceChangeConfirmKeyboardForProduct } from "../utils/prePaymentFlow";
+import { stripSupplierNames } from "../utils/customerSupplierText";
 
 function menuKb(hasPending: boolean, telegramId?: number) {
   return mainMenuKeyboard(hasPending, isAdminTelegramId(telegramId));
@@ -263,7 +264,7 @@ export async function checkoutConversation(
             "✅ *فاکتور ساخته شد*",
             "",
             `🧾 شماره: *#${invoice.id}*`,
-            `${emojiForLabel(product.name)} محصول: *${product.name}*`,
+            `${emojiForLabel(product.name)} محصول: *${stripSupplierNames(product.name)}*`,
             ...renderInvoiceAmountLines(invoice),
             "",
             "روش پرداخت را انتخاب کنید:",
@@ -365,7 +366,7 @@ export async function checkoutConversation(
       "✅ *فاکتور ساخته شد*",
       "",
       `🧾 شماره: *#${inv.id}*`,
-      `${emojiForLabel(product.name)} محصول: *${product.name}*`,
+      `${emojiForLabel(product.name)} محصول: *${stripSupplierNames(product.name)}*`,
       ...renderInvoiceAmountLines(inv),
       `📊 وضعیت: *${inv.status}*`,
       `🚚 ${deliveryTypeLabel(product.deliveryType)}`,

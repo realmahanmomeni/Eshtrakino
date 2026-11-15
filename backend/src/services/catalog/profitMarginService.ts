@@ -11,6 +11,11 @@ import { isInternalEshtrakinoFulfillment } from "./catalogAvailability";
 import type { CanbosoCatalogProduct } from "../suppliers/adapters/CanbosoAdapter";
 import { isCanbosoRemoteInStock } from "../suppliers/canboso/canbosoStock";
 import { supplierCostUsdFromRemote } from "../suppliers/canbosoCost";
+import {
+  findQuantumCachedUnit,
+  isQuantumSupplierName,
+  quantumUnitToCatalogProduct,
+} from "../suppliers/quantumvault/quantumCatalog";
 
 export type MarginPriceBreakdown = {
   supplierCostUsd: number;
@@ -149,6 +154,16 @@ async function fetchMappedCanbosoRemoteProduct(
   });
   if (!mapping?.product || isInternalEshtrakinoFulfillment(mapping.product)) {
     return null;
+  }
+
+  if (isQuantumSupplierName(mapping.supplier.name)) {
+    const unit = findQuantumCachedUnit({
+      productKey: mapping.supplierProductKey,
+      variantKey: mapping.supplierVariantKey,
+      offerGroup: mapping.supplierOfferGroup,
+    });
+    if (!unit) return null;
+    return { mapping, remote: quantumUnitToCatalogProduct(unit) };
   }
 
   const {

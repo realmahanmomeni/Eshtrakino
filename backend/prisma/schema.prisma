@@ -97,6 +97,7 @@ model Category {
   updatedAt     DateTime      @updatedAt
   products      Product[]
   subCategories SubCategory[]
+  supplierCategoryMappings SupplierCategoryMapping[]
 
   @@index([isActive])
 }
@@ -110,6 +111,7 @@ model SubCategory {
   categoryId    Int
   category      Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   products      Product[]
+  supplierCategoryMappings SupplierCategoryMapping[]
   sortOrder       Int       @default(0)
   isActive        Boolean   @default(true)
   /// When true, empty subcategories are kept and products here skip auto-reassign.
@@ -359,6 +361,27 @@ model Supplier {
   mappings        SupplierProductMapping[]
   orders          SupplierOrder[]
   pendingImports  SupplierPendingImport[]
+  categoryMappings SupplierCategoryMapping[]
+}
+
+/// Admin-provided folder → shop category suggestion. Left empty until the owner fills it.
+model SupplierCategoryMapping {
+  id            Int      @id @default(autoincrement())
+  supplierId    Int
+  /// Supplier folder label (Quantum `folder` string, or folder.name).
+  remoteFolder  String
+  categoryId    Int
+  subCategoryId Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  supplier    Supplier     @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  category    Category     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  subCategory SubCategory? @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
+
+  @@unique([supplierId, remoteFolder])
+  @@index([supplierId])
+  @@index([categoryId])
 }
 
 /// Supplier catalog SKU awaiting admin approval before appearing in the shop.
@@ -371,6 +394,8 @@ model SupplierPendingImport {
   status             SupplierPendingImportStatus @default(PENDING)
   displayName        String
   brandName          String?
+  /// Supplier folder used to suggest a shop category. Null on older rows.
+  remoteFolder       String?
   supplierCostUsd    Float
   profitMarginPercent Float?
   description        String?                     @db.Text
@@ -395,6 +420,7 @@ model SupplierPendingImport {
 
   @@unique([supplierId, supplierProductKey, supplierVariantKey])
   @@index([supplierId, status])
+  @@index([supplierId, remoteFolder, status])
   @@index([status, createdAt])
 }
 
@@ -424,6 +450,8 @@ model SupplierProductMapping {
   supplierId         Int
   supplierProductKey String
   supplierVariantKey String?
+  /// Stable multi-seller id when the supplier rotates productKey (Quantum offerGroup).
+  supplierOfferGroup String?
   /// Maximum allowed supplier price in their currency. If actual exceeds this, block purchase.
   maxPriceLimit      Decimal? @db.Decimal(14, 2)
   isAutoPurchase     Boolean  @default(true)
@@ -434,6 +462,7 @@ model SupplierProductMapping {
   supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
 
   @@index([supplierId])
+  @@index([supplierId, supplierOfferGroup])
 }
 
 model SupplierOrder {

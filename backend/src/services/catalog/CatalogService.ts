@@ -353,6 +353,9 @@ export class CatalogService {
     return prisma.product.findMany({
       where: { categoryId },
       orderBy: { id: "asc" },
+      include: {
+        supplierProductMapping: { include: { supplier: { select: { name: true } } } },
+      },
     });
   }
 
@@ -361,6 +364,9 @@ export class CatalogService {
     return prisma.product.findMany({
       where: { subCategoryId },
       orderBy: { id: "asc" },
+      include: {
+        supplierProductMapping: { include: { supplier: { select: { name: true } } } },
+      },
     });
   }
 
@@ -368,6 +374,9 @@ export class CatalogService {
   async listAdminProducts(): Promise<Product[]> {
     return prisma.product.findMany({
       orderBy: [{ categoryId: "asc" }, { id: "asc" }],
+      include: {
+        supplierProductMapping: { include: { supplier: { select: { name: true } } } },
+      },
     });
   }
 

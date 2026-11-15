@@ -146,14 +146,11 @@ export class CanbosoSyncService {
     await this.migrateMappedProductsToSupplierAuto();
     const { supplierId } = await this.ensureSupplierAndKey();
 
+    // Old mis-named Canboso rows only. The live Quantum supplier must keep its own mappings.
     const legacySuppliers = await prisma.supplier.findMany({
       where: {
-        OR: [
-          { name: "QuantumVault" },
-          { name: "Quantum Bot" },
-          { name: { contains: "quantum", mode: "insensitive" } },
-        ],
-        NOT: { id: supplierId },
+        OR: [{ name: "QuantumVault" }, { name: "Quantum Bot" }],
+        NOT: [{ id: supplierId }, { name: "Quantum" }],
       },
       select: { id: true },
     });

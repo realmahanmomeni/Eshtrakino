@@ -274,6 +274,7 @@ export class SupplierOrderAlertService {
       user: { telegramId: bigint };
       product: { name: string } | null;
     };
+    supplier?: { name: string } | null;
   }): string {
     const invoice = order.invoice;
     const productName = invoice.product?.name ?? "—";
@@ -297,6 +298,7 @@ export class SupplierOrderAlertService {
       "",
       `▫️ شماره فاکتور: \`#${order.internalInvoiceId}\``,
       `▫️ محصول: *${productName}*`,
+      ...(order.supplier?.name ? [`▫️ تامین‌کننده: *${order.supplier.name}*`] : []),
       `▫️ کاربر: \`${userId}\``,
       `▫️ تاریخ: ${date}`,
     ];

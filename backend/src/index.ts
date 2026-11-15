@@ -29,6 +29,15 @@ import {
 import { lazyCacheService } from "./services/catalog/LazyCacheService";
 import { canbosoSyncService, setCanbosoSyncNotifyApi } from "./services/suppliers/CanbosoSyncService";
 import { hydrateCanbosoCooldownFromSettings } from "./services/suppliers/canboso/canbosoCooldownState";
+import {
+  quantumSyncIntervalMs,
+  quantumSyncService,
+  setQuantumSyncNotifyApi,
+} from "./services/suppliers/QuantumSyncService";
+import { quantumRequestGate } from "./services/suppliers/quantumvault/quantumLimiter";
+import { setQuantumCircuitAlertHandler } from "./services/suppliers/quantumvault/quantumVaultHttp";
+import { getCatalogAdminTelegramIds } from "./lib/catalogAdminNotify";
+import { sendMessageThrottled } from "./lib/telegramSend";
 
 async function runAutoBackupCheck(bot: Bot<BotContext>): Promise<void> {
   const hours = await settingsService.getNumberSetting(AUTO_BACKUP_HOURS_KEY, 0);
@@ -152,9 +161,30 @@ async function main(): Promise<void> {
   registerHandlers(bot);
 
   setCanbosoSyncNotifyApi(bot.api);
+  setQuantumSyncNotifyApi(bot.api);
+  setQuantumCircuitAlertHandler(async (text) => {
+    await settingsService
+      .setSetting("QUANTUM_CIRCUIT_OPEN_UNTIL_MS", String(quantumRequestGate.pausedUntil()))
+      .catch(() => undefined);
+    const adminIds = await getCatalogAdminTelegramIds();
+    for (const adminId of adminIds) {
+      await sendMessageThrottled(bot.api, adminId, text, { parse_mode: "HTML" });
+    }
+  });
+  const quantumCircuitUntil = await settingsService.getSetting("QUANTUM_CIRCUIT_OPEN_UNTIL_MS");
+  if (quantumCircuitUntil) quantumRequestGate.pauseUntil(Number(quantumCircuitUntil));
+
   void canbosoSyncService.syncProductAvailability().catch((err) => {
     console.warn("[CanbosoSync] Post-start supplier sync failed:", err);
   });
+  void quantumSyncService.syncCatalog().catch((err) => {
+    console.warn("[QuantumSync] Post-start supplier sync failed:", err);
+  });
+  const quantumSyncTimer = setInterval(() => {
+    void quantumSyncService.syncCatalog().catch((err) => {
+      console.warn("[QuantumSync] Periodic sync failed:", err);
+    });
+  }, quantumSyncIntervalMs());
   void import("./services/suppliers/SupplierPendingImportService.js")
     .then(({ supplierPendingImportService }) =>
       supplierPendingImportService.flushPendingAdminNotifications(bot.api),
@@ -199,6 +229,7 @@ async function main(): Promise<void> {
     clearInterval(renewalTimer);
     clearInterval(swapWalletTimer);
     clearInterval(autoBackupTimer);
+    clearInterval(quantumSyncTimer);
     sessionStorage.stop();
     healthServer.close();
     bot.stop();

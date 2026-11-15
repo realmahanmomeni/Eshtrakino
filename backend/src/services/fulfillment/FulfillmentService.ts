@@ -111,6 +111,13 @@ export class FulfillmentService {
           return;
         }
 
+        const { holdPaidQuantumInvoiceForAdmin } = await import(
+          "../suppliers/quantumvault/quantumPurchaseHold.js"
+        );
+        if (await holdPaidQuantumInvoiceForAdmin(api, invoice.id, invoice.productId!)) {
+          return;
+        }
+
         const success = await supplierManager.processAutoPurchase(invoice.id, invoice.productId!);
 
         if (success) {
